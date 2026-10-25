@@ -21,7 +21,7 @@ PitchTraceComponent::PitchTraceComponent(PitchTraceQueue& queueToDrain)
     lastAppliedSensitivity = queue.globalSensitivity.load(std::memory_order_relaxed);
     lastAppliedScaleMask   = queue.activeScaleMask.load(std::memory_order_relaxed);
 
-    currentCoachHint = "Ready: Ctrl+A = Select All Notes  |  Ctrl+T = Tune Mode  |  Ctrl+S = Slice Mode  |  Ctrl+E = Note Shaper";
+    currentCoachHint = "Sing, play, or drop an audio file here. Drag notes to retune them.";
 
     // Seed an interactive vocal phrase so the NovaTone Piano Roll is immediately
     // testable with Center / Sensitivity / Variation / Transition / Formant before live audio starts.
@@ -193,7 +193,7 @@ void PitchTraceComponent::selectAllNotes()
     if (selectedNoteId < 0 || findNoteById(selectedNoteId) == nullptr)
         selectedNoteId = firstVoicedId;
 
-    currentCoachHint = "SELECTED ALL " + juce::String(count) + " NOTES (Ctrl+A): Drag any note, use Up/Down arrows, or move Inspector sliders to edit all notes together.";
+    currentCoachHint = "Selected all " + juce::String(count) + " notes. Drag any note, use the arrow keys, or the inspector to edit them together.";
     syncActiveOverrideToEngine();
     notifySelectionChanged();
     repaint();
@@ -391,13 +391,13 @@ void PitchTraceComponent::setToolMode(ToolMode mode) noexcept
 {
     currentToolMode = mode;
     if (mode == ToolMode::CutAndGlue)
-        currentCoachHint = "SLICE / GLUE MODE (Ctrl+S): Click inside any note to split it in two. Hold Ctrl + Click to glue adjacent notes.";
+        currentCoachHint = "Slice: click inside a note to split it. Ctrl+click to glue neighbouring notes.";
     else if (mode == ToolMode::AdvancedEdit)
-        currentCoachHint = "NOTE SHAPER MODE (Ctrl+E): Drag top = Formant | middle = Variation | bottom = Gain | corners = Ramp speed.";
+        currentCoachHint = "Shape: drag the top of a note for formant, the middle for variation, the bottom for gain, the corners for ramps.";
     else if (mode == ToolMode::FreehandDraw)
-        currentCoachHint = "DRAW CURVE MODE (Ctrl+F / 4): Paint custom freehand pitch curves & vibrato directly on any vocal note! Right-Click to reset.";
+        currentCoachHint = "Draw: paint a freehand pitch curve or vibrato over any note. Right-click to reset.";
     else
-        currentCoachHint = "MOVE / TUNE MODE (Ctrl+T): Drag note = Semitones | Alt+Drag = Fine Cents | Ctrl+K = Auto-Key | Ctrl+L = Leveler.";
+        currentCoachHint = "Move: drag a note for semitones, Alt+drag for cents. Ctrl+K detects the key, Ctrl+L levels volume.";
     repaint();
 }
 
@@ -471,8 +471,8 @@ void PitchTraceComponent::setPolyphonicMode(bool polyEnabled)
     }
 
     currentCoachHint = polyphonicModeEnabled
-        ? "POLYPHONIC MELODYNE MODE (Ctrl+P): Full Chord, Choir & String detection active! Drag individual chord notes to re-voice harmonies."
-        : "MONOPHONIC NEWTONE MODE (Ctrl+P): Solo Vocal detection & TD-PSOLA tuning active.";
+        ? "Poly mode: chord, choir and string detection. Drag individual chord notes to re-voice harmonies."
+        : "Mono mode: solo-voice detection and tuning.";
     repaint();
 }
 
@@ -488,8 +488,8 @@ void PitchTraceComponent::setMidiCleanMode(bool cleanEnabled)
     notifySelectionChanged();
 
     currentCoachHint = midiCleanModeEnabled
-        ? "MIDI CLEAN MODE (Ctrl+M): Instrument Noise Gate + Gap Bridging + Micro-Note Denoising + Legato Stitching active!"
-        : "STANDARD DETECTION MODE (Ctrl+M): Raw frame-by-frame vocal/instrument segmentation active.";
+        ? "MIDI clean on: noise gate, gap bridging, micro-note removal and legato stitching."
+        : "MIDI clean off: raw frame-by-frame segmentation.";
     repaint();
 }
 
@@ -653,7 +653,7 @@ void PitchTraceComponent::autoDetectKeyAndApply()
     float confidence = 0.0f;
     if (!detectKeyAndScaleFromTimeline(detRoot, detMode, confidence))
     {
-        currentCoachHint = "AUTO-KEY: Sing or load a vocal phrase first so NovaTone can analyze the key and scale.";
+        currentCoachHint = "Detect key: sing or load a phrase first so there is something to analyse.";
         repaint(getCoachBarArea().toNearestInt());
         return;
     }
@@ -676,8 +676,8 @@ void PitchTraceComponent::autoDetectKeyAndApply()
         snapAllNotesToScale();
 
     const juce::String keyName = juce::String(rootNames[detRoot]) + (detMode == 1 ? " Minor" : " Major");
-    currentCoachHint = "AUTO-KEY DETECTED: " + keyName + " (" + juce::String(juce::roundToInt(confidence * 100.0f))
-                     + "% confidence) — Scale locked & notes snapped!";
+    currentCoachHint = "Detected " + keyName + " (" + juce::String(juce::roundToInt(confidence * 100.0f))
+                     + "% confidence). Scale set and notes snapped.";
     repaint();
 }
 
@@ -716,8 +716,8 @@ void PitchTraceComponent::levelAllNotesVolume(float levelingAmount0to1)
         n.userEdited = true;
     }
 
-    currentCoachHint = "NOTE LEVELER MACRO (Ctrl+L): Balanced " + juce::String(voicedCount)
-                     + " vocal notes toward phrase average (" + juce::String(targetMeanDb, 1) + " dB) with zero compressor pumping.";
+    currentCoachHint = "Levelled " + juce::String(voicedCount)
+                     + " notes toward the phrase average (" + juce::String(targetMeanDb, 1) + " dB).";
     syncActiveOverrideToEngine();
     notifySelectionChanged();
     repaint();
@@ -1667,7 +1667,7 @@ void PitchTraceComponent::timerCallback()
 //==============================================================================
 juce::Rectangle<float> PitchTraceComponent::getPianoRulerArea() const noexcept
 {
-    auto b = getLocalBounds().toFloat().reduced(2.5f);
+    auto b = getLocalBounds().toFloat();
     b.removeFromTop(timeRulerHeight);
     b.removeFromBottom(coachBarHeight);
     return b.removeFromLeft(pianoRulerWidth);
@@ -1675,7 +1675,7 @@ juce::Rectangle<float> PitchTraceComponent::getPianoRulerArea() const noexcept
 
 juce::Rectangle<float> PitchTraceComponent::getTimeRulerArea() const noexcept
 {
-    auto b = getLocalBounds().toFloat().reduced(2.5f);
+    auto b = getLocalBounds().toFloat();
     auto top = b.removeFromTop(timeRulerHeight);
     top.removeFromLeft(pianoRulerWidth);
     return top;
@@ -1683,13 +1683,13 @@ juce::Rectangle<float> PitchTraceComponent::getTimeRulerArea() const noexcept
 
 juce::Rectangle<float> PitchTraceComponent::getCoachBarArea() const noexcept
 {
-    auto b = getLocalBounds().toFloat().reduced(2.5f);
+    auto b = getLocalBounds().toFloat();
     return b.removeFromBottom(coachBarHeight);
 }
 
 juce::Rectangle<float> PitchTraceComponent::getGridArea() const noexcept
 {
-    auto b = getLocalBounds().toFloat().reduced(2.5f);
+    auto b = getLocalBounds().toFloat();
     b.removeFromTop(timeRulerHeight);
     b.removeFromBottom(coachBarHeight);
     b.removeFromLeft(pianoRulerWidth);
@@ -2011,7 +2011,7 @@ void PitchTraceComponent::paintPianoRollRuler(juce::Graphics& g, juce::Rectangle
     juce::Graphics::ScopedSaveState clipState(g);
     g.reduceClipRegion(area.toNearestInt());
 
-    g.setColour(backgroundDeep);
+    g.setColour(panel);
     g.fillRect(area);
 
     const int minMidi = juce::jmax(12, static_cast<int>(std::floor(viewCentreMidiNote - viewHalfRangeSemitones)) - 1);
@@ -2026,28 +2026,30 @@ void PitchTraceComponent::paintPianoRollRuler(juce::Graphics& g, juce::Rectangle
         const bool black   = isBlackKey(m);
         const bool inScale = isMidiNoteInScale(m, scaleMask);
 
-        g.setColour(black ? pianoBlackKey : (inScale ? pianoWhiteKey : pianoWhiteKeyShadow.darker(0.35f)));
-        g.fillRect(keyRect);
+        // Dark keyboard: white keys are the lighter rows; the key area is inset from the right edge.
+        const auto keyArea = black ? keyRect.withTrimmedRight(keyRect.getWidth() * 0.38f) : keyRect;
+        g.setColour(black ? background : panelLight.brighter(isLightChassis ? 0.0f : 0.05f));
+        g.fillRect(keyArea.withTrimmedRight(4.0f));
 
-        // Mint scale-lock indicator strip on keys belonging to the active scale
         if (inScale)
         {
-            g.setColour(mintAccent.withAlpha(black ? 0.90f : 0.78f));
-            g.fillRect(juce::Rectangle<float>(keyRect.getRight() - 4.5f, keyRect.getY() + 1.0f, 4.0f, keyRect.getHeight() - 2.0f));
+            g.setColour(mintAccent.withAlpha(0.85f));
+            g.fillRect(juce::Rectangle<float>(keyRect.getRight() - 3.0f, keyRect.getY() + 1.0f, 2.0f, keyRect.getHeight() - 2.0f));
         }
 
-        g.setColour(graphGridLineBright.withAlpha(0.55f));
-        g.drawHorizontalLine(juce::roundToInt(yBot), area.getX(), area.getRight());
+        g.setColour(hairline());
+        g.drawHorizontalLine(juce::roundToInt(yBot), area.getX(), area.getRight() - 4.0f);
 
-        if (m % 12 == 0 || keyRect.getHeight() >= 13.0f)
+        const bool isC = (m % 12 == 0);
+        if (isC || (keyRect.getHeight() >= 14.0f && ! black))
         {
-            g.setFont(HarmonyEngineUI::font(9.5f, m % 12 == 0, 0.04f));
-            g.setColour(black ? textPrimary.withAlpha(0.90f) : (m % 12 == 0 ? backgroundDeep : background.brighter(0.15f)));
-            g.drawText(midiNoteName(m), keyRect.reduced(4.0f, 0.0f), juce::Justification::centredLeft, false);
+            g.setFont(HarmonyEngineUI::font(10.0f, isC));
+            g.setColour(isC ? textPrimary : textSecondary.withAlpha(inScale ? 0.9f : 0.5f));
+            g.drawText(midiNoteName(m), keyRect.reduced(6.0f, 0.0f).withTrimmedRight(2.0f), juce::Justification::centredLeft, false);
         }
     }
 
-    g.setColour(graphOutline);
+    g.setColour(hairline());
     g.drawVerticalLine(juce::roundToInt(area.getRight() - 1.0f), area.getY(), area.getBottom());
 }
 
@@ -2057,73 +2059,70 @@ void PitchTraceComponent::paintTimeRuler(juce::Graphics& g, juce::Rectangle<floa
     juce::Graphics::ScopedSaveState clipState(g);
     g.reduceClipRegion(area.toNearestInt());
 
-    g.setColour(graphBackground.darker(0.25f));
+    g.setColour(panel);
     g.fillRect(area);
 
     constexpr float hopsPerBeat = 46.875f;
     const int firstBeat = juce::jmax(0, static_cast<int>(std::floor(viewStartHop / hopsPerBeat)));
     const int lastBeat  = static_cast<int>(std::ceil((viewStartHop + visibleHopsCount) / hopsPerBeat));
 
-    g.setFont(HarmonyEngineUI::font(9.5f, true, 0.08f));
+    g.setFont(HarmonyEngineUI::font(10.5f, true));
     for (int beat = firstBeat; beat <= lastBeat; ++beat)
     {
         const float hop = static_cast<float>(beat) * hopsPerBeat;
         const float x   = hopToX(hop, grid);
         const bool isBar = (beat % 4) == 0;
 
-        g.setColour(isBar ? cyanAccent.withAlpha(0.80f) : graphGridLineBright);
-        g.drawVerticalLine(juce::roundToInt(x), isBar ? area.getY() + 3.0f : area.getCentreY(), area.getBottom());
+        g.setColour(isBar ? textSecondary.withAlpha(0.8f) : hairline().withMultipliedAlpha(2.2f));
+        g.drawVerticalLine(juce::roundToInt(x), isBar ? area.getY() + 4.0f : area.getBottom() - 6.0f, area.getBottom());
 
         if (isBar)
         {
-            const int barNum = (beat / 4) + 1;
-            g.setColour(juce::Colours::white.withAlpha(0.88f));
-            g.drawText("BAR " + juce::String(barNum),
-                       juce::Rectangle<float>(x + 5.0f, area.getY(), 56.0f, area.getHeight()),
+            g.setColour(textSecondary);
+            g.drawText(juce::String((beat / 4) + 1), juce::Rectangle<float>(x + 5.0f, area.getY(), 40.0f, area.getHeight()),
                        juce::Justification::centredLeft, false);
         }
     }
 
-    // Legend on the right side of the time ruler
-    auto legend = area.reduced(10.0f, 0.0f);
-    g.setFont(HarmonyEngineUI::font(9.0f, true, 0.06f));
-    g.setColour(cyanBright);
-    const juce::String modeLegend = polyphonicModeEnabled
-        ? "POLY DNA (CHORD / CHOIR / STRINGS)     CYAN = Multi-Voice Pitch     AMBER = Chord Note"
-        : "MONO NEWTONE (SOLO VOCAL)     CYAN = Tuned Vocal Pitch     AMBER = Note Block";
-    g.drawText(modeLegend, legend, juce::Justification::centredRight, false);
+    // Playhead marker
+    const int scrubbedHop = queue.currentPlayheadHop.load(std::memory_order_relaxed);
+    const int activePlayHop = (scrubbedHop > 0 && scrubbedHop < static_cast<int>(timeline.size())) ? scrubbedHop : (static_cast<int>(timeline.size()) - 1);
+    if (activePlayHop > 0)
+    {
+        const float px = hopToX(static_cast<float>(activePlayHop), grid);
+        if (px >= area.getX() && px <= area.getRight())
+        {
+            juce::Path tri;
+            tri.addTriangle(px - 5.0f, area.getBottom() - 7.0f, px + 5.0f, area.getBottom() - 7.0f, px, area.getBottom());
+            g.setColour(cyanBright);
+            g.fillPath(tri);
+        }
+    }
 
-    g.setColour(graphOutline);
+    g.setColour(hairline());
     g.drawHorizontalLine(juce::roundToInt(area.getBottom() - 1.0f), area.getX(), area.getRight());
 }
 
 void PitchTraceComponent::paintCoachBar(juce::Graphics& g, juce::Rectangle<float> area)
 {
     using namespace HarmonyEngineColours;
-    g.setColour(graphBackground.darker(0.18f));
-    g.fillRect(area);
+    if (area.isEmpty()) return;
 
-    g.setColour(graphOutline);
+    g.setColour(panel);
+    g.fillRect(area);
+    g.setColour(hairline());
     g.drawHorizontalLine(juce::roundToInt(area.getY()), area.getX(), area.getRight());
 
-    // Coach pill badge on the left
-    auto badge = area.removeFromLeft(68.0f).reduced(6.0f, 4.0f);
-    g.setColour(cyanAccent.withAlpha(0.20f));
-    g.fillRoundedRectangle(badge, 4.0f);
-    g.setColour(cyanAccent.withAlpha(0.75f));
-    g.drawRoundedRectangle(badge, 4.0f, 1.0f);
-    g.setFont(HarmonyEngineUI::font(8.5f, true, 0.12f));
-    g.setColour(cyanBright);
-    g.drawText("COACH", badge, juce::Justification::centred, false);
+    auto text = area.reduced(12.0f, 0.0f);
+    const auto modeText = polyphonicModeEnabled ? juce::String("Poly") : juce::String("Mono");
+    g.setFont(HarmonyEngineUI::font(11.0f, true));
+    g.setColour(polyphonicModeEnabled ? mintAccent : cyanAccent);
+    const float mw = juce::GlyphArrangement::getStringWidth(g.getCurrentFont(), modeText) + 12.0f;
+    g.drawText(modeText, text.removeFromLeft(mw), juce::Justification::centredLeft, false);
 
-    g.setFont(HarmonyEngineUI::font(10.0f, false, 0.03f));
-    g.setColour(juce::Colours::white.withAlpha(0.90f));
-    g.drawText(currentCoachHint, area.reduced(6.0f, 0.0f), juce::Justification::centredLeft, true);
-
-    g.setFont(HarmonyEngineUI::font(9.0f, true, 0.05f));
+    g.setFont(HarmonyEngineUI::font(11.5f, false));
     g.setColour(textSecondary);
-    g.drawText("Ctrl+A = Select All  |  Ctrl+T = Tune  |  Ctrl+S = Slice  |  Ctrl+E = Shaper",
-               area.reduced(10.0f, 0.0f), juce::Justification::centredRight, false);
+    g.drawText(currentCoachHint, text, juce::Justification::centredLeft, true);
 }
 
 void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<float> grid, uint16_t scaleMask)
@@ -2132,9 +2131,13 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
     juce::Graphics::ScopedSaveState clipState(g);
     g.reduceClipRegion(grid.toNearestInt());
 
-    // 1. Horizontal semitone lanes (clear distinction between in-scale and out-of-scale rows)
+    // 1. Horizontal semitone lanes: in-scale rows are lifted, out-of-scale rows recede.
     const int minMidi = juce::jmax(12, static_cast<int>(std::floor(viewCentreMidiNote - viewHalfRangeSemitones)) - 1);
     const int maxMidi = juce::jmin(108, static_cast<int>(std::ceil(viewCentreMidiNote + viewHalfRangeSemitones)) + 1);
+
+    const auto rowIn      = graphBackground.brighter(isLightChassis ? 0.10f : 0.045f);
+    const auto rowInBlack = graphBackground.brighter(isLightChassis ? 0.05f : 0.020f);
+    const auto rowOut     = graphBackground.darker(0.25f);
 
     for (int m = minMidi; m <= maxMidi; ++m)
     {
@@ -2143,22 +2146,14 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
         const juce::Rectangle<float> rowRect(grid.getX(), yTop, grid.getWidth(), juce::jmax(1.0f, yBot - yTop));
 
         const bool inScale = isMidiNoteInScale(m, scaleMask);
-        const bool black   = isBlackKey(m);
-
-        if (!inScale)
-            g.setColour(juce::Colour(0xff07090e).withAlpha(0.72f));
-        else if (black)
-            g.setColour(juce::Colour(0xff131824).withAlpha(0.65f));
-        else
-            g.setColour(juce::Colour(0xff182030).withAlpha(0.55f));
-
+        g.setColour(! inScale ? rowOut : (isBlackKey(m) ? rowInBlack : rowIn));
         g.fillRect(rowRect);
 
-        g.setColour(m % 12 == 0 ? cyanAccent.withAlpha(0.22f) : graphGridLine.withAlpha(0.80f));
+        g.setColour(m % 12 == 0 ? textPrimary.withAlpha(0.10f) : textPrimary.withAlpha(0.035f));
         g.drawHorizontalLine(juce::roundToInt(yBot), grid.getX(), grid.getRight());
     }
 
-    // 2. Vertical beat & quarter-beat grid lines
+    // 2. Vertical bar / beat / sub-beat lines
     constexpr float hopsPerQuarterBeat = 46.875f * 0.25f;
     const int firstSub = juce::jmax(0, static_cast<int>(std::floor(viewStartHop / hopsPerQuarterBeat)));
     const int lastSub  = static_cast<int>(std::ceil((viewStartHop + visibleHopsCount) / hopsPerQuarterBeat));
@@ -2168,7 +2163,7 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
         const float x = hopToX(static_cast<float>(sub) * hopsPerQuarterBeat, grid);
         const bool isBar  = (sub % 16) == 0;
         const bool isBeat = (sub % 4) == 0;
-        g.setColour(isBar ? cyanAccent.withAlpha(0.28f) : (isBeat ? graphGridLineBright.withAlpha(0.65f) : graphGridLine.withAlpha(0.40f)));
+        g.setColour(textPrimary.withAlpha(isBar ? 0.12f : (isBeat ? 0.055f : 0.022f)));
         g.drawVerticalLine(juce::roundToInt(x), grid.getY(), grid.getBottom());
     }
 
@@ -2199,9 +2194,9 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
         g.fillRect(midiBar);
         g.setColour(mintAccent.withAlpha(0.75f));
         g.drawRect(midiBar, 1.2f);
-        g.setFont(HarmonyEngineUI::font(9.0f, true, 0.08f));
+        g.setFont(HarmonyEngineUI::font(10.5f, true));
         g.setColour(mintAccent.brighter(0.3f));
-        g.drawText("MIDI TARGET: " + midiNoteName(liveMidiNote), midiBar.reduced(8.0f, 1.0f), juce::Justification::centredRight, false);
+        g.drawText("MIDI " + midiNoteName(liveMidiNote), midiBar.reduced(8.0f, 1.0f), juce::Justification::centredRight, false);
     }
 
     // 3. Draw NewTone Note Blocks (Ghost Semitone Blocks + Warm Amber Target Note Blocks + Waveform Blobs)
@@ -2227,9 +2222,9 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
             g.drawRoundedRectangle(rect, 4.0f, 1.0f);
             if (rect.getWidth() > 22.0f)
             {
-                g.setFont(HarmonyEngineUI::font(8.0f, true, 0.08f));
+                g.setFont(HarmonyEngineUI::font(10.0f, false));
                 g.setColour(mintAccent.brighter(0.25f));
-                g.drawText("BREATH/SIB", rect.reduced(2.0f), juce::Justification::centred, false);
+                g.drawText("breath", rect.reduced(2.0f), juce::Justification::centred, false);
             }
             continue;
         }
@@ -2249,12 +2244,9 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
             g.drawRoundedRectangle(ghostRect, 4.0f, 1.0f);
         }
 
-        // 3b. Active Target Note Block (Warm NewTone Amber/Coral)
-        juce::ColourGradient blockFill(
-            (isSel ? accentBright : accent).withAlpha(isSel ? 0.68f : 0.48f), rect.getX(), rect.getY(),
-            accentDeep.withAlpha(isSel ? 0.78f : 0.56f), rect.getX(), rect.getBottom(), false);
-        g.setGradientFill(blockFill);
-        g.fillRoundedRectangle(rect, 5.0f);
+        // 3b. Target note block: flat tinted fill
+        g.setColour(accent.withAlpha(isSel ? 0.34f : (isHov ? 0.26f : 0.18f)));
+        g.fillRoundedRectangle(rect, 4.0f);
 
         // 3c. Internal Waveform Amplitude Blob inside Note Block
         const float gainLin = juce::Decibels::decibelsToGain(note.gainDb);
@@ -2290,29 +2282,32 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
         }
         blobPath.closeSubPath();
 
-        g.setColour(accentBright.brighter(0.3f).withAlpha(isSel ? 0.42f : 0.28f));
+        g.setColour(accentBright.withAlpha(isSel ? 0.55f : 0.40f));
         g.fillPath(blobPath);
 
-        // 3d. Note Block Border & Ramp-In / Ramp-Out slope lines
-        g.setColour(isSel ? juce::Colours::white : (isHov ? accentBright : accent.brighter(0.15f)));
-        g.drawRoundedRectangle(rect, 5.0f, isSel ? 2.0f : 1.2f);
+        // 3d. Border, ramp-in / ramp-out slopes (only prominent while shaping)
+        g.setColour(isSel ? textPrimary : accent.withAlpha(isHov ? 1.0f : 0.85f));
+        g.drawRoundedRectangle(rect.reduced(0.5f), 4.0f, isSel ? 1.6f : 1.0f);
 
         const float rampInX  = rect.getX() + rect.getWidth() * note.rampInRatio;
         const float rampOutX = rect.getRight() - rect.getWidth() * note.rampOutRatio;
-        g.setColour(cyanBright.withAlpha(showAdv ? 0.85f : 0.35f));
-        g.drawLine(rect.getX(), rect.getBottom(), rampInX, rect.getY(), 1.2f);
-        g.drawLine(rampOutX, rect.getY(), rect.getRight(), rect.getBottom(), 1.2f);
+        if (showAdv || isSel)
+        {
+            g.setColour(cyanBright.withAlpha(showAdv ? 0.8f : 0.35f));
+            g.drawLine(rect.getX(), rect.getBottom(), rampInX, rect.getY(), 1.0f);
+            g.drawLine(rampOutX, rect.getY(), rect.getRight(), rect.getBottom(), 1.0f);
+        }
 
-        // 3e. Note Pitch Badge + Deviation readout
-        if (rect.getWidth() > 26.0f)
+        // 3e. Note name + cents offset
+        if (rect.getWidth() > 26.0f && rect.getHeight() >= 11.0f)
         {
             juce::String label = midiNoteName(note.targetMidi);
             if (std::abs(note.fineCents) >= 1.0f)
                 label += (note.fineCents > 0.0f ? " +" : " ") + juce::String(juce::roundToInt(note.fineCents)) + "c";
 
-            g.setFont(HarmonyEngineUI::font(9.5f, true, 0.05f));
-            g.setColour(juce::Colours::white);
-            g.drawText(label, rect.reduced(5.0f, 1.5f), juce::Justification::topLeft, false);
+            g.setFont(HarmonyEngineUI::font(juce::jlimit(9.5f, 11.0f, rect.getHeight() * 0.8f), true));
+            g.setColour(isLightChassis ? juce::Colours::white : textPrimary);
+            g.drawText(label, rect.reduced(6.0f, 0.0f), juce::Justification::centredLeft, false);
         }
 
         if (showAdv && rect.getWidth() > 44.0f)
@@ -2321,10 +2316,10 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
             g.fillEllipse(rampInX - 3.5f, rect.getY() - 3.5f, 7.0f, 7.0f);
             g.fillEllipse(rampOutX - 3.5f, rect.getY() - 3.5f, 7.0f, 7.0f);
 
-            juce::String advText = "FMT:" + juce::String(note.formantSemitones, 1)
-                                 + "  VAR:" + juce::String(juce::roundToInt(note.noteVariation * 100.0f)) + "%"
-                                 + "  VOL:" + juce::String(note.gainDb, 1) + "dB";
-            g.setFont(HarmonyEngineUI::font(8.2f, true, 0.04f));
+            juce::String advText = "fmt " + juce::String(note.formantSemitones, 1)
+                                 + "   var " + juce::String(juce::roundToInt(note.noteVariation * 100.0f)) + "%"
+                                 + "   " + juce::String(note.gainDb, 1) + " dB";
+            g.setFont(HarmonyEngineUI::font(10.0f, false));
             g.setColour(cyanBright);
             g.drawText(advText, rect.reduced(5.0f, 1.5f), juce::Justification::bottomRight, false);
         }
@@ -2413,26 +2408,21 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
             }
         }
 
-        // Original pitch curve (subtle slate-silver)
-        g.setColour(pitchTraceUncorrected.withAlpha(0.80f));
-        g.strokePath(uncorrectedPath, juce::PathStrokeType(1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        // Original pitch (thin, neutral) and corrected pitch (accent line with a soft glow)
+        g.setColour(pitchTraceUncorrected.withAlpha(0.75f));
+        g.strokePath(uncorrectedPath, juce::PathStrokeType(1.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
-        // Corrected hero pitch curve (Electric Cyan multi-pass bloom)
-        g.setColour(pitchTraceHeroHalo.withAlpha(0.22f));
-        g.strokePath(correctedPath, juce::PathStrokeType(8.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour(pitchTraceHeroGold.withAlpha(0.45f));
-        g.strokePath(correctedPath, juce::PathStrokeType(4.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour(pitchTraceHeroGold.withAlpha(0.95f));
-        g.strokePath(correctedPath, juce::PathStrokeType(2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour(pitchTraceHeroCore.withAlpha(0.96f));
-        g.strokePath(correctedPath, juce::PathStrokeType(1.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.setColour(pitchTraceHeroHalo.withAlpha(0.18f));
+        g.strokePath(correctedPath, juce::PathStrokeType(6.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.setColour(pitchTraceHeroGold);
+        g.strokePath(correctedPath, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
         const int scrubbedHop = queue.currentPlayheadHop.load(std::memory_order_relaxed);
         const int activePlayHop = (scrubbedHop > 0 && scrubbedHop < static_cast<int>(timeline.size())) ? scrubbedHop : (static_cast<int>(timeline.size()) - 1);
         const float playheadX = hopToX(static_cast<float>(activePlayHop), grid);
         if (playheadX >= grid.getX() && playheadX <= grid.getRight())
         {
-            g.setColour(cyanBright.withAlpha(0.85f));
+            g.setColour(cyanBright.withAlpha(0.7f));
             g.drawVerticalLine(juce::roundToInt(playheadX), grid.getY(), grid.getBottom());
         }
     }
@@ -2440,26 +2430,39 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
 
 void PitchTraceComponent::paint(juce::Graphics& g)
 {
-    HarmonyEngineUI::drawInsetGlass(g, getLocalBounds(), 12.0f);
+    using namespace HarmonyEngineColours;
+    const auto outer = getLocalBounds().toFloat();
+    const float radius = 10.0f;
 
-    const uint16_t scaleMask = queue.activeScaleMask.load(std::memory_order_relaxed);
-    const auto grid       = getGridArea();
-    const auto pianoRuler = getPianoRulerArea();
-    const auto timeRuler  = getTimeRulerArea();
-    const auto coachArea  = getCoachBarArea();
+    // Everything is clipped to the rounded card so rulers and grid share its corners.
+    juce::Path card;
+    card.addRoundedRectangle(outer, radius);
+    {
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(card);
+        g.setColour(graphBackground);
+        g.fillRect(outer);
 
-    paintGridAndNotes(g, grid, scaleMask);
-    paintPianoRollRuler(g, pianoRuler, scaleMask);
-    paintTimeRuler(g, timeRuler, grid);
-    paintCoachBar(g, coachArea);
+        const uint16_t scaleMask = queue.activeScaleMask.load(std::memory_order_relaxed);
+        const auto grid       = getGridArea();
+        const auto pianoRuler = getPianoRulerArea();
+        const auto timeRuler  = getTimeRulerArea();
 
-    // Top-left corner badge above Piano Roll ruler
-    const juce::Rectangle<float> corner(pianoRuler.getX(), timeRuler.getY(), pianoRuler.getWidth(), timeRuler.getHeight());
-    g.setColour(HarmonyEngineColours::graphBackground.darker(0.3f));
-    g.fillRect(corner);
-    g.setFont(HarmonyEngineUI::font(8.5f, true, 0.12f));
-    g.setColour(polyphonicModeEnabled ? HarmonyEngineColours::mintAccent : HarmonyEngineColours::cyanBright);
-    g.drawText(polyphonicModeEnabled ? "POLY DNA" : "MONO", corner, juce::Justification::centred, false);
+        paintGridAndNotes(g, grid, scaleMask);
+        paintPianoRollRuler(g, pianoRuler, scaleMask);
+        paintTimeRuler(g, timeRuler, grid);
+        paintCoachBar(g, getCoachBarArea());
+
+        const juce::Rectangle<float> corner(pianoRuler.getX(), timeRuler.getY(), pianoRuler.getWidth(), timeRuler.getHeight());
+        g.setColour(panel);
+        g.fillRect(corner);
+        g.setColour(hairline());
+        g.drawHorizontalLine(juce::roundToInt(corner.getBottom() - 1.0f), corner.getX(), corner.getRight());
+        g.drawVerticalLine(juce::roundToInt(corner.getRight() - 1.0f), corner.getY(), corner.getBottom());
+    }
+
+    g.setColour(hairline());
+    g.drawRoundedRectangle(outer.reduced(0.5f), radius, 1.0f);
 }
 
 //==============================================================================
@@ -2663,7 +2666,7 @@ void PitchTraceComponent::mouseMove(const juce::MouseEvent& e)
     if (timeRuler.contains(pt))
     {
         setMouseCursor(juce::MouseCursor::PointingHandCursor);
-        currentCoachHint = "Time Ruler: Click or drag horizontally to scrub the playhead across the vocal phrase.";
+        currentCoachHint = "Click or drag on the ruler to move the playhead.";
         repaint(getCoachBarArea().toNearestInt());
         return;
     }
@@ -2718,7 +2721,7 @@ void PitchTraceComponent::mouseMove(const juce::MouseEvent& e)
     else
     {
         setMouseCursor(juce::MouseCursor::NormalCursor);
-        currentCoachHint = "Canvas: Drag empty space to pan around the vocal phrase, or drop any WAV/MP3 vocal file here to edit.";
+        currentCoachHint = "Drag empty space to pan. Drop a WAV/MP3 here to edit it.";
     }
     repaint(getCoachBarArea().toNearestInt());
 }
@@ -3697,7 +3700,7 @@ void PitchTraceComponent::loadMidiReferenceFile(const juce::File& midiFile)
             }
         }
     }
-    currentCoachHint = "MIDI REFERENCE LOADED: Showing " + juce::String(referenceGhostNotes.size()) + " reference melody ghost notes behind your vocal!";
+    currentCoachHint = "Loaded " + juce::String(referenceGhostNotes.size()) + " reference notes, shown behind your vocal.";
     repaint();
 }
 

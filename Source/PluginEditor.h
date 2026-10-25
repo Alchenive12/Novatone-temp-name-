@@ -48,7 +48,7 @@ private:
     juce::ComboBox themeBox;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> themeAttachment;
     juce::ComboBox presetBox;
-    juce::TextButton saveButton { "SAVE" }, saveAsButton { "SAVE AS" };
+    juce::TextButton saveButton { "Save" }, saveAsButton { "Save as" };
     juce::Rectangle<int> brandArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PresetBar)
@@ -65,6 +65,9 @@ public:
 
     void paint(juce::Graphics&) override;
     void resized() override;
+
+    /** Shows a component (the live tuner) in the middle of the footer. */
+    void setCentreComponent(juce::Component* c);
 
 private:
     struct Meter
@@ -86,6 +89,7 @@ private:
     juce::Slider inputKnob, outputKnob;
     juce::AudioProcessorValueTreeState::SliderAttachment inputAttachment, outputAttachment;
     Meter inputMeter, outputMeter;
+    juce::Component* centreComponent = nullptr;
     double lastTickMs = 0.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MasterBar)
@@ -112,6 +116,7 @@ private:
     PresetBar presetBar;
     TuneTab   workstationView;
     MasterBar masterBar;
+    bool      ownsDefaultLookAndFeel = false;
     juce::TooltipWindow tooltipWindow { this, 500 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NovaToneAudioProcessorEditor)

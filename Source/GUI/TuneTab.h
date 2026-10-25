@@ -32,6 +32,9 @@ public:
 
     void refreshTheme();
 
+    /** The live tuner readout; the editor shows it in its footer. */
+    juce::Component& getTunerComponent() noexcept { return noteTriangle; }
+
     // Interactive splitter bar mouse overrides for resizing/collapsing the lower bars:
     void mouseMove (const juce::MouseEvent& e) override;
     void mouseExit (const juce::MouseEvent& e) override;
@@ -54,12 +57,9 @@ private:
         void paint (juce::Graphics& g) override;
         void resized() override;
 
-        static constexpr int preferredWidth = 382;
-
     private:
         juce::ComboBox rangeBox, rootBox, modeBox;
         std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> rangeAttachment, rootAttachment, modeAttachment;
-        juce::Rectangle<int> rangeLabelArea, keyLabelArea, scaleLabelArea;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScaleSelector)
     };
@@ -89,6 +89,7 @@ private:
     };
 
     class NoteTriangle : public juce::Component,
+                         public juce::SettableTooltipClient,
                          private juce::Timer
     {
     public:
@@ -111,13 +112,6 @@ private:
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NoteTriangle)
     };
 
-    enum class SplitterDragMode
-    {
-        None = 0,
-        ResizeLowerDock,     ///< Main splitter right below Piano Roll (or top of Knob Dock): scales/collapses the lower dock.
-        ResizeInspectorOnly  ///< Divider right below Inspector Bar: resizes/collapses only the Inspector Bar.
-    };
-
     void updateControlStates();
     void setActiveToolMode (PitchTraceComponent::ToolMode mode);
     void applyQuickVocalStyle (float center, float sensitivity, float variation, float transition, float vibratoCents, float humanize);
@@ -125,8 +119,7 @@ private:
     void refreshSelectedNoteInspector();
     void cycleDockLayoutPreset();
     void setInspectorVisibility (bool visible);
-    void setMiddleRowVisibility (bool visible);
-    void setKnobRowVisibility (bool visible);
+    void setDockVisibility (bool visible);
 
     juce::AudioProcessorValueTreeState& apvtsRef;
 
@@ -143,24 +136,23 @@ private:
     RotaryKnob formantKnob;
     RotaryKnob vibratoKnob;
 
-    // Top Editor Toolbar Buttons:
-    juce::ToggleButton editToolButton     { "1. MOVE" };
-    juce::ToggleButton cutToolButton      { "2. SLICE" };
-    juce::ToggleButton advancedToolButton { "3. SHAPER" };
-    juce::ToggleButton drawToolButton     { "4. DRAW" };
-    juce::ToggleButton polyModeButton     { "MONO (NEWTONE)" };
-    juce::ToggleButton midiCleanButton    { "MIDI CLEAN" };
-    juce::ToggleButton snapScaleButton    { "SNAP SCALE" };
-    juce::ToggleButton autoScrollButton   { "AUTO-SCROLL" };
-    juce::TextButton   undoButton         { "UNDO" };
-    juce::TextButton   redoButton         { "REDO" };
-    juce::TextButton   autoKeyButton      { "AUTO-KEY" };
-    juce::TextButton   levelerButton      { "LEVELER" };
-    juce::TextButton   dockViewButton     { "BAR: FULL" };
-    juce::TextButton   snapAllButton      { "SNAP ALL" };
-    juce::TextButton   loadWavButton      { "LOAD AUDIO" };
-    juce::TextButton   exportMidiButton   { "EXPORT MIDI" };
-    juce::TextButton   clearButton        { "CLEAR" };
+    // Toolbar
+    juce::ToggleButton editToolButton     { "Move" };
+    juce::ToggleButton cutToolButton      { "Slice" };
+    juce::ToggleButton advancedToolButton { "Shape" };
+    juce::ToggleButton drawToolButton     { "Draw" };
+    juce::ToggleButton monoModeButton     { "Mono" };
+    juce::ToggleButton polyModeButton     { "Poly" };
+    juce::ToggleButton midiCleanButton    { "MIDI clean" };
+    juce::ToggleButton snapScaleButton    { "Snap" };
+    juce::ToggleButton autoScrollButton   { "Follow" };
+    juce::TextButton   undoButton;
+    juce::TextButton   redoButton;
+    juce::TextButton   autoKeyButton      { "Detect" };
+    juce::TextButton   levelerButton      { "Level" };
+    juce::TextButton   dockViewButton;
+    juce::TextButton   snapAllButton      { "Snap all" };
+    juce::TextButton   fileMenuButton     { "File" };
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> polyModeAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> midiCleanAttachment;
@@ -169,51 +161,44 @@ private:
 
     // Selected-Note Quick Inspector Controls:
     juce::Label      inspectorNoteLabel;
-    juce::TextButton semiDownButton { "-1 SEMI" };
-    juce::TextButton semiUpButton   { "+1 SEMI" };
+    juce::TextButton semiDownButton;
+    juce::TextButton semiUpButton;
     juce::Slider     noteCentsSlider;
     juce::Slider     noteFormantSlider;
     juce::Slider     noteVarSlider;
     juce::Slider     noteGainSlider;
     juce::Slider     noteSibSlider;
-    juce::TextButton resetNoteButton { "RESET NOTE" };
+    juce::TextButton resetNoteButton { "Reset" };
     bool             updatingInspector = false;
 
     // 1-Click Vocal Style Preset Buttons, Humanize & Lookahead Controls:
-    juce::TextButton   styleNaturalButton { "NATURAL VOCAL" };
-    juce::TextButton   stylePopButton     { "MODERN POP" };
-    juce::TextButton   styleHardButton    { "HARD TUNE" };
+    juce::TextButton   styleNaturalButton { "Natural" };
+    juce::TextButton   stylePopButton     { "Pop" };
+    juce::TextButton   styleHardButton    { "Hard tune" };
     juce::Slider       humanizeSlider;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> humanizeAttachment;
-    juce::Rectangle<int> humanizeLabelArea;
     juce::ToggleButton smoothButton;
     juce::AudioProcessorValueTreeState::ButtonAttachment smoothAttachment;
     juce::ToggleButton lookaheadButton;
     juce::AudioProcessorValueTreeState::ButtonAttachment lookaheadAttachment;
 
-    // Adjustable Lower Bar & Dock Height State:
-    static constexpr int defaultLowerDockHeight = 280;
-    static constexpr int defaultInspectorHeight = 40;
-    int  lowerDockHeight       = defaultLowerDockHeight; ///< Total height below main splitter (0..340 px)
-    int  savedLowerDockHeight  = defaultLowerDockHeight; ///< Restored on double-click when collapsed
-    int  userInspectorHeight   = defaultInspectorHeight; ///< Independent Quick Inspector Bar height (0 or 26..64 px)
-    int  dragStartDockHeight   = defaultLowerDockHeight;
-    int  dragStartInspHeight   = defaultInspectorHeight;
-    float dragStartMouseY      = 0.0f;
-    juce::uint32 lastDragLayoutMs = 0;                   ///< 60 Hz frame-rate limiter for smooth drag relayout
-    SplitterDragMode activeSplitterDrag = SplitterDragMode::None;
-    bool mainSplitterHovered   = false;
-    bool inspSplitterHovered   = false;
-    bool knobSplitterHovered   = false;
+    // Lower area visibility (toggled by the dock button, the splitter, or Ctrl+B):
+    static constexpr int inspectorHeight = 38;
+    static constexpr int dockHeight      = 156;
+    bool  showInspector     = true;
+    bool  showDock          = true;
+    float dragStartMouseY   = 0.0f;
+    bool  draggingSplitter  = false;
+    bool  splitterHovered   = false;
 
-    juce::Rectangle<int> toolbarPanelArea;
-    juce::Rectangle<int> splitterBarArea;          ///< Main draggable bar right below the 2D Piano Roll
-    juce::Rectangle<int> inspectorBottomSplitArea; ///< Secondary draggable divider right above the 12-key Piano Roll
-    juce::Rectangle<int> knobTopSplitArea;         ///< Draggable divider right above the 6-knob dock
+    void showFileMenu();
+
+    juce::Rectangle<int> splitterBarArea;     ///< Drag / double-click handle between piano roll and lower area
     juce::Rectangle<int> inspectorPanelArea;
-    juce::Rectangle<int> pianoPanelArea;
-    juce::Rectangle<int> macroPanelArea;
-    juce::Rectangle<int> knobPanelArea;
+    juce::Rectangle<int> scaleCardArea, knobCardArea, styleCardArea;
+    juce::Rectangle<int> scaleTitleArea, knobTitleArea, styleTitleArea;
+    juce::Rectangle<int> humanizeLabelArea;
+    juce::Rectangle<int> noteLabelArea;
 
     juce::Rectangle<int> centsLabelArea, formantLabelArea, varLabelArea, gainLabelArea, sibLabelArea;
 

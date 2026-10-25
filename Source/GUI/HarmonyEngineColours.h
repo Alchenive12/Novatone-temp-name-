@@ -6,7 +6,7 @@
 
     Supports 5 instant-switchable themes across all translation units via C++20
     inline namespace colour state:
-      0. NovaTone Studio  — Midnight Slate, Electric Cyan & Warm Coral/Amber
+      0. NovaTone Studio  - Neutral Graphite, Electric Cyan & Warm Amber
       1. Harmony Engine   — Vintage Pearl Ivory & Metallic Gold
       2. The Drum Master  — Theatrical Noir Stage, Seafoam Mint & Crimson Coral
       3. The Conductor    — Concert Hall Espresso, Champagne Brass & Warm Tungsten
@@ -45,44 +45,44 @@ namespace HarmonyEngineColours
 
     //==========================================================================
     // Dynamic Semantic Palette (C++17/20 inline shared across translation units)
-    inline juce::Colour background           (0xff11141c);
-    inline juce::Colour backgroundDeep       (0xff0b0d13);
-    inline juce::Colour panel                (0xff191e2b);
-    inline juce::Colour panelLight           (0xff232a3b);
+    inline juce::Colour background           (0xff0f1116);
+    inline juce::Colour backgroundDeep       (0xff0a0b0f);
+    inline juce::Colour panel                (0xff161920);
+    inline juce::Colour panelLight           (0xff1f232c);
 
     inline juce::Colour accent               (0xffff8a3d);
-    inline juce::Colour accentBright         (0xffffae66);
-    inline juce::Colour accentDeep           (0xffcc5a14);
+    inline juce::Colour accentBright         (0xffffa766);
+    inline juce::Colour accentDeep           (0xffd9682a);
 
     inline juce::Colour cyanAccent           (0xff38bdf8);
     inline juce::Colour cyanBright           (0xff7dd3fc);
-    inline juce::Colour cyanDeep             (0xff0284c7);
+    inline juce::Colour cyanDeep             (0xff0ea5e9);
 
     inline juce::Colour mintAccent           (0xff2dd4bf);
     inline juce::Colour glow                 (0xff38bdf8);
 
-    inline juce::Colour textPrimary          (0xfff1f5f9);
-    inline juce::Colour textSecondary        (0xff94a3b8);
+    inline juce::Colour textPrimary          (0xffe8eaef);
+    inline juce::Colour textSecondary        (0xff8b92a1);
 
-    inline juce::Colour knobOutline          (0xff334155);
+    inline juce::Colour knobOutline          (0xff2a2f3a);
     inline juce::Colour shadowColour         (0x66000000);
 
-    inline juce::Colour graphBackground      (0xff0d1017);
-    inline juce::Colour graphOutline         (0xff2a3449);
-    inline juce::Colour graphGridLine        (0xff1e2636);
-    inline juce::Colour graphGridLineBright  (0xff334155);
+    inline juce::Colour graphBackground      (0xff0b0d11);
+    inline juce::Colour graphOutline         (0xff22262f);
+    inline juce::Colour graphGridLine        (0xff171a21);
+    inline juce::Colour graphGridLineBright  (0xff252a34);
     inline juce::Colour vuArc                (0xff38bdf8);
 
-    inline juce::Colour pitchTraceBackground  (0xff0d1017);
-    inline juce::Colour pitchTraceUncorrected (0xff64748b);
+    inline juce::Colour pitchTraceBackground  (0xff0b0d11);
+    inline juce::Colour pitchTraceUncorrected (0xff6b7383);
     inline juce::Colour pitchTraceHeroCore    (0xffffffff);
     inline juce::Colour pitchTraceHeroGold    (0xff38bdf8);
     inline juce::Colour pitchTraceHeroHalo    (0xff0ea5e9);
 
-    inline juce::Colour pianoWhiteKey        (0xffe2e8f0);
-    inline juce::Colour pianoWhiteKeyShadow  (0xffcbd5e1);
-    inline juce::Colour pianoBlackKey        (0xff1e293b);
-    inline juce::Colour pianoBlackKeyGleam   (0xff334155);
+    inline juce::Colour pianoWhiteKey        (0xffd6dae2);
+    inline juce::Colour pianoWhiteKeyShadow  (0xffb4bac6);
+    inline juce::Colour pianoBlackKey        (0xff1a1d24);
+    inline juce::Colour pianoBlackKeyGleam   (0xff2a2f3a);
     inline juce::Colour pianoKeyActiveGlow   (0xff2dd4bf);
     inline juce::Colour pianoKeyActiveGold   (0xffff8a3d);
 
@@ -244,40 +244,46 @@ namespace HarmonyEngineColours
             default:
                 activeKnobStyle       = KnobStyle::StudioModern;
                 isLightChassis        = false;
-                background            = juce::Colour(0xff11141c);
-                backgroundDeep        = juce::Colour(0xff0b0d13);
-                panel                 = juce::Colour(0xff191e2b);
-                panelLight            = juce::Colour(0xff232a3b);
+                background            = juce::Colour(0xff0f1116);
+                backgroundDeep        = juce::Colour(0xff0a0b0f);
+                panel                 = juce::Colour(0xff161920);
+                panelLight            = juce::Colour(0xff1f232c);
                 accent                = juce::Colour(0xffff8a3d);
-                accentBright          = juce::Colour(0xffffae66);
-                accentDeep            = juce::Colour(0xffcc5a14);
+                accentBright          = juce::Colour(0xffffa766);
+                accentDeep            = juce::Colour(0xffd9682a);
                 cyanAccent            = juce::Colour(0xff38bdf8);
                 cyanBright            = juce::Colour(0xff7dd3fc);
-                cyanDeep              = juce::Colour(0xff0284c7);
+                cyanDeep              = juce::Colour(0xff0ea5e9);
                 mintAccent            = juce::Colour(0xff2dd4bf);
                 glow                  = juce::Colour(0xff38bdf8);
-                textPrimary           = juce::Colour(0xfff1f5f9);
-                textSecondary         = juce::Colour(0xff94a3b8);
-                knobOutline           = juce::Colour(0xff334155);
+                textPrimary           = juce::Colour(0xffe8eaef);
+                textSecondary         = juce::Colour(0xff8b92a1);
+                knobOutline           = juce::Colour(0xff2a2f3a);
                 shadowColour          = juce::Colour(0x66000000);
-                graphBackground       = juce::Colour(0xff0d1017);
-                graphOutline          = juce::Colour(0xff2a3449);
-                graphGridLine         = juce::Colour(0xff1e2636);
-                graphGridLineBright   = juce::Colour(0xff334155);
+                graphBackground       = juce::Colour(0xff0b0d11);
+                graphOutline          = juce::Colour(0xff22262f);
+                graphGridLine         = juce::Colour(0xff171a21);
+                graphGridLineBright   = juce::Colour(0xff252a34);
                 vuArc                 = juce::Colour(0xff38bdf8);
-                pitchTraceBackground  = juce::Colour(0xff0d1017);
-                pitchTraceUncorrected = juce::Colour(0xff64748b);
+                pitchTraceBackground  = juce::Colour(0xff0b0d11);
+                pitchTraceUncorrected = juce::Colour(0xff6b7383);
                 pitchTraceHeroCore    = juce::Colour(0xffffffff);
                 pitchTraceHeroGold    = juce::Colour(0xff38bdf8);
                 pitchTraceHeroHalo    = juce::Colour(0xff0ea5e9);
-                pianoWhiteKey         = juce::Colour(0xffe2e8f0);
-                pianoWhiteKeyShadow   = juce::Colour(0xffcbd5e1);
-                pianoBlackKey         = juce::Colour(0xff1e293b);
-                pianoBlackKeyGleam    = juce::Colour(0xff334155);
+                pianoWhiteKey         = juce::Colour(0xffd6dae2);
+                pianoWhiteKeyShadow   = juce::Colour(0xffb4bac6);
+                pianoBlackKey         = juce::Colour(0xff1a1d24);
+                pianoBlackKeyGleam    = juce::Colour(0xff2a2f3a);
                 pianoKeyActiveGlow    = juce::Colour(0xff2dd4bf);
                 pianoKeyActiveGold    = juce::Colour(0xffff8a3d);
                 break;
         }
+    }
+
+    /** 1 px separator / card border that works on every theme. */
+    inline juce::Colour hairline() noexcept
+    {
+        return textPrimary.withAlpha(isLightChassis ? 0.12f : 0.07f);
     }
 
     inline void applyTheme(int index) noexcept

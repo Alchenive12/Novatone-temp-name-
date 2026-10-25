@@ -5,12 +5,27 @@
 //==============================================================================
 namespace
 {
-    constexpr int toolbarHeight   = 38;
-    constexpr int splitterHeight  = 10;
-    constexpr int baseMiddleH     = 76;
-    constexpr int baseKnobH       = 152;
+    constexpr int toolbarHeight  = 34;
+    constexpr int splitterHeight = 10;
+    constexpr int cardPad        = 12;
+    constexpr int cardTitleH     = 16;
+
+    const juce::String minusSign = juce::String::charToString ((juce::juce_wchar) 0x2212);
+
+    void styleSegment (juce::Button& b, const char* segment)
+    {
+        b.getProperties().set ("segment", segment);
+    }
+
+    void styleChip (juce::Button& b, const char* role)
+    {
+        b.getProperties().set ("chip", true);
+        b.getProperties().set ("pillRole", role);
+    }
 }
 
+//==============================================================================
+// SCALE KEYBOARD (12 pitch-class mask)
 //==============================================================================
 TuneTab::PianoMask::PianoKeyButton::PianoKeyButton (juce::String noteName, bool isBlackKeyToDraw)
     : note (std::move (noteName)), blackKey (isBlackKeyToDraw)
@@ -18,49 +33,49 @@ TuneTab::PianoMask::PianoKeyButton::PianoKeyButton (juce::String noteName, bool 
     setTooltip ("Toggle " + note + " in or out of the active scale");
 }
 
-void TuneTab::PianoMask::PianoKeyButton::paint(juce::Graphics& g)
+void TuneTab::PianoMask::PianoKeyButton::paint (juce::Graphics& g)
 {
     using namespace HarmonyEngineColours;
 
-    auto bounds = getLocalBounds().toFloat();
+    const auto bounds = getLocalBounds().toFloat().reduced (blackKey ? 0.0f : 0.5f, 0.0f);
     const bool active = getToggleState();
+    const bool hover  = isMouseOver();
+    const float r = 4.0f;
 
-    if (!active)
+    juce::Path key;
+    key.addRoundedRectangle (bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight(), r, r,
+                             false, false, true, true);
+
+    juce::Colour fill;
+    if (blackKey)
+        fill = active ? pianoBlackKeyGleam.interpolatedWith (mintAccent, 0.55f) : pianoBlackKey;
+    else
+        fill = active ? (isLightChassis ? pianoWhiteKey : pianoWhiteKey.interpolatedWith (panelLight, 0.22f))
+                      : pianoWhiteKey.withMultipliedAlpha (isLightChassis ? 0.55f : 0.22f);
+    if (hover)
+        fill = fill.brighter (0.08f);
+
+    g.setColour (fill);
+    g.fillPath (key);
+    g.setColour (blackKey ? background.withAlpha (0.9f) : hairline().withMultipliedAlpha (2.0f));
+    g.strokePath (key, juce::PathStrokeType (1.0f));
+
+    if (! blackKey)
     {
-        g.setColour(blackKey ? backgroundDeep : panel);
-        g.fillRoundedRectangle(bounds, 3.5f);
-
-        g.setColour(knobOutline.withAlpha(0.45f));
-        g.drawRoundedRectangle(bounds.reduced(0.5f), 3.5f, 1.0f);
-
-        g.setColour(textSecondary.withAlpha(0.45f));
-        g.setFont(HarmonyEngineUI::font(9.5f, true));
-        g.drawText(note, getLocalBounds().removeFromBottom(15), juce::Justification::centred);
-        return;
+        // In-scale marker: small accent bar along the bottom of the key.
+        if (active)
+        {
+            g.setColour (mintAccent);
+            g.fillRoundedRectangle (bounds.withTop (bounds.getBottom() - 3.0f).reduced (bounds.getWidth() * 0.22f, 0.0f), 1.5f);
+        }
+        g.setColour (active ? juce::Colour (0xff15171c) : textSecondary);
+        g.setFont (HarmonyEngineUI::font (10.5f, true));
+        g.drawText (note, getLocalBounds().removeFromBottom (18), juce::Justification::centred);
     }
-
-    const auto keyCol = blackKey ? pianoBlackKeyGleam.interpolatedWith(mintAccent, 0.38f)
-                                 : pianoWhiteKey.interpolatedWith(mintAccent, 0.22f);
-    g.setColour(keyCol);
-    g.fillRoundedRectangle(bounds, 3.5f);
-
-    g.setColour(mintAccent);
-    g.drawRoundedRectangle(bounds.reduced(0.75f), 3.5f, 1.5f);
-
-    const float ledRadius = 3.0f;
-    const juce::Point<float> ledCentre(bounds.getCentreX(), bounds.getY() + ledRadius + 4.0f);
-    g.setColour(mintAccent.brighter(0.35f));
-    g.fillEllipse(ledCentre.x - ledRadius, ledCentre.y - ledRadius, ledRadius * 2.0f, ledRadius * 2.0f);
-
-    g.setColour(blackKey ? juce::Colours::white : juce::Colour(0xff0b0d13));
-    g.setFont(HarmonyEngineUI::font(9.5f, true));
-    g.drawText(note, getLocalBounds().removeFromBottom(15), juce::Justification::centred);
 }
 
-//==============================================================================
 TuneTab::PianoMask::PianoMask (juce::AudioProcessorValueTreeState& apvts)
 {
-    setBufferedToImage (true);
     static const std::array<juce::String, 12> noteNames { "C","C#","D","D#","E","F","F#","G","G#","A","A#","B" };
     static const std::array<bool, 12> isBlack           { false, true, false, true, false, false, true, false, true, false, true, false };
 
@@ -88,8 +103,8 @@ void TuneTab::PianoMask::resized()
     constexpr int numWhiteKeys = 7;
 
     const float whiteKeyWidth  = (float) bounds.getWidth() / (float) numWhiteKeys;
-    const float blackKeyWidth  = whiteKeyWidth * 0.62f;
-    const float blackKeyHeight = (float) bounds.getHeight() * 0.62f;
+    const float blackKeyWidth  = whiteKeyWidth * 0.58f;
+    const float blackKeyHeight = (float) bounds.getHeight() * 0.58f;
 
     static const std::array<int, 12> pitchClassToWhiteIndex { 0, -1, 1, -1, 2, 3, -1, 4, -1, 5, -1, 6 };
 
@@ -99,8 +114,8 @@ void TuneTab::PianoMask::resized()
         if (whiteIndex >= 0)
         {
             juce::Rectangle<float> r (whiteKeyWidth * (float) whiteIndex, 0.0f,
-                                       whiteKeyWidth, (float) bounds.getHeight());
-            keyButtons[(size_t) i]->setBounds (r.reduced (1.5f, 0.0f).toNearestInt());
+                                      whiteKeyWidth, (float) bounds.getHeight());
+            keyButtons[(size_t) i]->setBounds (r.reduced (1.0f, 0.0f).toNearestInt());
         }
     }
 
@@ -116,12 +131,13 @@ void TuneTab::PianoMask::resized()
 }
 
 //==============================================================================
-// LIVE DIGITAL PITCH & CENTS TUNER MONITOR
+// LIVE TUNER READOUT (shown in the editor footer)
 //==============================================================================
 TuneTab::NoteTriangle::NoteTriangle (const PitchTraceComponent& pitchSourceToPoll)
     : pitchSource (pitchSourceToPoll)
 {
     setOpaque (false);
+    setTooltip ("Live tuner: the note being sung and how far NovaTone is moving it (cents)");
     startTimerHz (30);
 }
 
@@ -140,6 +156,8 @@ juce::String TuneTab::NoteTriangle::noteNameForMidi (int midiNote)
 void TuneTab::NoteTriangle::timerCallback()
 {
     const auto latest = pitchSource.getLatestPitch();
+    const bool hadSignal = hasSignal;
+    const float before = smoothedCorrectionCents;
 
     if (latest.isVoiced && latest.correctedPitchHz > 0.0f)
     {
@@ -159,110 +177,133 @@ void TuneTab::NoteTriangle::timerCallback()
         hasSignal = false;
     }
 
-    repaint();
+    if (hasSignal || hadSignal || std::abs (before - smoothedCorrectionCents) > 0.05f)
+        repaint();
 }
 
 void TuneTab::NoteTriangle::paint (juce::Graphics& g)
 {
     using namespace HarmonyEngineColours;
 
-    const auto b = getLocalBounds().toFloat();
-    HarmonyEngineUI::drawInsetGlass (g, getLocalBounds(), 10.0f);
+    auto b = getLocalBounds().toFloat().reduced (2.0f, 6.0f);
+    g.setColour (panel);
+    g.fillRoundedRectangle (b, 8.0f);
+    g.setColour (hairline());
+    g.drawRoundedRectangle (b.reduced (0.5f), 8.0f, 1.0f);
 
-    auto inner = b.reduced (10.0f, 4.0f);
-    if (inner.getHeight() >= 48.0f)
-    {
-        g.setFont (HarmonyEngineUI::font (9.0f, true, 0.16f));
-        g.setColour (isLightChassis ? glow.withAlpha(0.8f) : textSecondary);
-        g.drawText ("LIVE TUNER", inner.removeFromTop (13.0f), juce::Justification::centred);
-    }
+    auto inner = b.reduced (12.0f, 0.0f);
 
+    // Note name
     const auto noteStr = hasSignal ? noteNameForMidi ((int) std::lround (smoothedMidiNote)) : juce::String ("--");
-    const float noteFontH = juce::jlimit (15.0f, 22.0f, inner.getHeight() * 0.56f);
-    g.setFont (HarmonyEngineUI::font (noteFontH, true, 0.06f));
-    g.setColour (hasSignal ? cyanBright : juce::Colours::white.withAlpha (0.45f));
-    g.drawText (noteStr, inner.removeFromTop (juce::jmin (28.0f, inner.getHeight() - 10.0f)), juce::Justification::centred);
+    g.setFont (HarmonyEngineUI::font (16.0f, true));
+    g.setColour (hasSignal ? cyanBright : textSecondary.withAlpha (0.6f));
+    g.drawText (noteStr, inner.removeFromLeft (40.0f), juce::Justification::centredLeft);
 
-    auto barTrack = inner.withSizeKeepingCentre (inner.getWidth() - 8.0f, 6.0f);
-    g.setColour (graphGridLineBright);
-    g.fillRoundedRectangle (barTrack, 3.0f);
+    // Cents readout
+    const int cents = hasSignal ? juce::roundToInt (smoothedCorrectionCents) : 0;
+    g.setFont (HarmonyEngineUI::font (11.5f, false));
+    g.setColour (textSecondary);
+    g.drawText (hasSignal ? ((cents > 0 ? "+" : (cents < 0 ? minusSign : juce::String())) + juce::String (std::abs (cents)) + " c")
+                          : juce::String ("idle"),
+                inner.removeFromRight (40.0f), juce::Justification::centredRight);
 
-    const float midX = barTrack.getCentreX();
-    g.setColour (mintAccent);
-    g.drawVerticalLine (juce::roundToInt (midX), barTrack.getY() - 2.0f, barTrack.getBottom() + 2.0f);
+    // Correction meter: centre tick + bar towards the correction amount.
+    auto track = inner.reduced (8.0f, 0.0f).withSizeKeepingCentre (inner.getWidth() - 16.0f, 4.0f);
+    g.setColour (panelLight.brighter (isLightChassis ? 0.0f : 0.10f));
+    g.fillRoundedRectangle (track, 2.0f);
 
+    const float midX = track.getCentreX();
     if (hasSignal && std::abs (smoothedCorrectionCents) > 1.0f)
     {
         const float norm = juce::jlimit (-1.0f, 1.0f, smoothedCorrectionCents / 50.0f);
-        const float tipX = midX + norm * (barTrack.getWidth() * 0.48f);
-        const auto fill = juce::Rectangle<float> (juce::jmin (midX, tipX), barTrack.getY(),
-                                                  std::abs (tipX - midX), barTrack.getHeight());
+        const float tipX = midX + norm * (track.getWidth() * 0.5f);
         g.setColour (std::abs (smoothedCorrectionCents) < 12.0f ? mintAccent : accent);
-        g.fillRoundedRectangle (fill, 3.0f);
+        g.fillRoundedRectangle (juce::Rectangle<float> (juce::jmin (midX, tipX), track.getY(),
+                                                        std::abs (tipX - midX), track.getHeight()), 2.0f);
     }
+    g.setColour (textPrimary.withAlpha (0.7f));
+    g.fillRect (juce::Rectangle<float> (1.5f, 10.0f).withCentre ({ midX, track.getCentreY() }));
 }
 
 //==============================================================================
 // WORKSTATION MAIN VIEW
 //==============================================================================
 TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& queue)
-    : ModuleTab       (apvts, "tune", "PITCH & TIME WORKSTATION", "DRAG NOTES OR USE 1-CLICK VOCAL STYLES"),
+    : ModuleTab       (apvts, "tune", "Pitch & time workstation", {}),
       apvtsRef        (apvts),
       scaleSelector   (apvts),
       pitchTrace      (queue),
       noteTriangle    (pitchTrace),
       pianoMask       (apvts),
-      centerKnob      (apvts, "tune_center",      "CENTER",      "Pitch Pull",      HarmonyEngineColours::accent,     "accent"),
-      sensitivityKnob (apvts, "tune_sensitivity", "SENSITIVITY", "Note Split/Lock", HarmonyEngineColours::mintAccent, "mint"),
-      variationKnob   (apvts, "tune_variation",   "VARIATION",   "Vibrato & Drift", HarmonyEngineColours::cyanAccent, "cyan"),
-      transitionKnob  (apvts, "tune_transition",  "TRANSITION",  "Glide Speed",     HarmonyEngineColours::cyanAccent, "cyan"),
-      formantKnob     (apvts, "alter_formant",    "FORMANT",     "Vocal Throat",    HarmonyEngineColours::accent,     "accent"),
-      vibratoKnob     (apvts, "tune_vibrato",     "VIBRATO",     "Sustained Cap",   HarmonyEngineColours::mintAccent, "mint"),
+      centerKnob      (apvts, "tune_center",      "Center",      "Pitch pull",      HarmonyEngineColours::accent,     "accent"),
+      sensitivityKnob (apvts, "tune_sensitivity", "Sensitivity", "Note split",      HarmonyEngineColours::mintAccent, "mint"),
+      variationKnob   (apvts, "tune_variation",   "Variation",   "Vibrato & drift", HarmonyEngineColours::cyanAccent, "cyan"),
+      transitionKnob  (apvts, "tune_transition",  "Transition",  "Glide speed",     HarmonyEngineColours::cyanAccent, "cyan"),
+      formantKnob     (apvts, "alter_formant",    "Formant",     "Throat",          HarmonyEngineColours::accent,     "accent"),
+      vibratoKnob     (apvts, "tune_vibrato",     "Vibrato",     "Sustain cap",     HarmonyEngineColours::mintAccent, "mint"),
       smoothAttachment    (apvts, "tune_smooth",    smoothButton),
       lookaheadAttachment (apvts, "tune_lookahead", lookaheadButton)
 {
-    header.setTrailingComponent (&scaleSelector, ScaleSelector::preferredWidth, 28);
+    addAndMakeVisible (scaleSelector);
     addAndMakeVisible (pitchTrace);
     addAndMakeVisible (noteTriangle);
     addAndMakeVisible (pianoMask);
 
-    centerKnob.setTooltipText ("CENTER (NewTone): Pulls the average pitch of every note toward the target scale note (100% = dead-center pitch).");
-    sensitivityKnob.setTooltipText ("SENSITIVITY (NewTone): Controls how eagerly NovaTone splits vocal phrases into separate note blocks and locks onto quiet syllables.");
-    variationKnob.setTooltipText ("VARIATION (NewTone): Scales vibrato and pitch expression inside each note (0% = robotic flat line, 100% = natural expression).");
-    transitionKnob.setTooltipText ("TRANSITION (NewTone): Controls how fast pitch glides from one note block to the next (100% = instant snap).");
-    formantKnob.setTooltipText ("FORMANT: Shifts vocal throat character deeper (-st) or brighter (+st) while keeping pitch intact.");
-    vibratoKnob.setTooltipText ("VIBRATO: Caps maximum vibrato swing on sustained notes.");
+    centerKnob.setTooltipText ("Center: pulls the average pitch of every note toward the target scale note (100% = dead-center pitch).");
+    sensitivityKnob.setTooltipText ("Sensitivity: how eagerly NovaTone splits phrases into separate notes and locks onto quiet syllables.");
+    variationKnob.setTooltipText ("Variation: scales vibrato and pitch expression inside each note (0% = flat line, 100% = natural expression).");
+    transitionKnob.setTooltipText ("Transition: how fast pitch glides from one note to the next (100% = instant snap).");
+    formantKnob.setTooltipText ("Formant: shifts vocal throat character deeper (-) or brighter (+) while keeping pitch intact.");
+    vibratoKnob.setTooltipText ("Vibrato: caps the maximum vibrato swing on sustained notes.");
 
     for (auto* k : { &centerKnob, &sensitivityKnob, &variationKnob, &transitionKnob, &formantKnob, &vibratoKnob })
         addAndMakeVisible (k);
 
     auto& laf = HarmonyEngineLookAndFeel::shared();
 
-    // 1. Top Toolbar Buttons
-    for (auto* tb : { &editToolButton, &cutToolButton, &advancedToolButton, &drawToolButton, &polyModeButton, &midiCleanButton, &snapScaleButton, &autoScrollButton })
+    //--------------------------------------------------------------------------
+    // Toolbar: tools (segmented), mono/poly (segmented), status chips
+    for (auto* tb : { &editToolButton, &cutToolButton, &advancedToolButton, &drawToolButton,
+                      &monoModeButton, &polyModeButton, &midiCleanButton, &snapScaleButton, &autoScrollButton })
     {
         tb->setLookAndFeel (&laf);
         addAndMakeVisible (tb);
     }
-    editToolButton.getProperties().set ("pillRole", "accent");
-    cutToolButton.getProperties().set ("pillRole", "accent");
-    advancedToolButton.getProperties().set ("pillRole", "accent");
-    drawToolButton.getProperties().set ("pillRole", "accent");
+
+    styleSegment (editToolButton, "first");
+    styleSegment (cutToolButton, "middle");
+    styleSegment (advancedToolButton, "middle");
+    styleSegment (drawToolButton, "last");
+    for (auto* tb : { &editToolButton, &cutToolButton, &advancedToolButton, &drawToolButton })
+        tb->getProperties().set ("pillRole", "accent");
+
+    styleSegment (monoModeButton, "first");
+    styleSegment (polyModeButton, "last");
+    monoModeButton.getProperties().set ("pillRole", "cyan");
     polyModeButton.getProperties().set ("pillRole", "mint");
-    midiCleanButton.getProperties().set ("pillRole", "mint");
-    midiCleanButton.setTooltip ("MIDI CLEAN MODE (Ctrl+M): Cleans pick/fret/drum noise, bridges dropouts, stitches fragmented notes, and outputs ultra-accurate instrument MIDI.");
+
+    styleChip (snapScaleButton,  "cyan");
+    styleChip (autoScrollButton, "cyan");
+    styleChip (midiCleanButton,  "mint");
+    midiCleanButton.setTooltip ("MIDI clean (Ctrl+M): cleans pick/fret/drum noise, bridges dropouts and stitches fragmented notes for accurate instrument MIDI.");
+    snapScaleButton.setTooltip ("Snap edited notes to the active key & scale");
+    autoScrollButton.setTooltip ("Follow: keep the playhead in view while audio comes in");
 
     editToolButton.setToggleState (true, juce::dontSendNotification);
-    editToolButton.setTooltip ("1. MOVE / TUNE: Drag notes up/down for semitones, Alt+Drag for cents, Right-Click to snap to scale.");
-    cutToolButton.setTooltip ("2. SLICE / GLUE: Click inside a note to split it in two; Ctrl+Click to glue adjacent notes.");
-    advancedToolButton.setTooltip ("3. NOTE SHAPER: Drag directly inside a note block to shape per-note Formant, Variation, Gain, and Ramp.");
-    drawToolButton.setTooltip ("4. DRAW CURVE: Paint custom freehand pitch contours directly onto vocal notes.");
-    polyModeButton.setTooltip ("Toggle between Monophonic (NewTone solo vocal) and Polyphonic (Melodyne chord/choir/string) detection.");
+    editToolButton.setTooltip     ("Move (Ctrl+T): drag notes up/down by semitones, Alt+drag for cents, right-click to snap to scale.");
+    cutToolButton.setTooltip      ("Slice (Ctrl+S): click inside a note to split it; Ctrl+click to glue neighbouring notes.");
+    advancedToolButton.setTooltip ("Shape (Ctrl+E): drag inside a note to shape its formant, variation, gain and ramps.");
+    drawToolButton.setTooltip     ("Draw (Ctrl+F): paint a freehand pitch curve over the notes.");
 
     editToolButton.onClick     = [this] { setActiveToolMode (PitchTraceComponent::ToolMode::StandardEdit); };
     cutToolButton.onClick      = [this] { setActiveToolMode (PitchTraceComponent::ToolMode::CutAndGlue); };
     advancedToolButton.onClick = [this] { setActiveToolMode (PitchTraceComponent::ToolMode::AdvancedEdit); };
     drawToolButton.onClick     = [this] { setActiveToolMode (PitchTraceComponent::ToolMode::FreehandDraw); };
+
+    monoModeButton.setTooltip ("Mono: single-voice detection for solo vocals (Ctrl+P to switch)");
+    polyModeButton.setTooltip ("Poly: multi-voice detection for chords, choirs and strings (Ctrl+P to switch)");
+    monoModeButton.setRadioGroupId (0x4e56);
+    polyModeButton.setRadioGroupId (0x4e56);
 
     if (apvts.getParameter ("tune_polyphonic") != nullptr)
         polyModeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (apvts, "tune_polyphonic", polyModeButton);
@@ -275,9 +316,17 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     polyModeButton.onStateChange = [this]
     {
         const bool poly = polyModeButton.getToggleState();
-        polyModeButton.setButtonText (poly ? "POLY (MELODYNE)" : "MONO (NEWTONE)");
-        pitchTrace.setPolyphonicMode (poly);
+        monoModeButton.setToggleState (! poly, juce::dontSendNotification);
+        if (pitchTrace.isPolyphonicMode() != poly)
+            pitchTrace.setPolyphonicMode (poly);
     };
+    monoModeButton.onClick = [this]
+    {
+        if (polyModeButton.getToggleState())
+            polyModeButton.setToggleState (false, juce::sendNotificationSync);
+        monoModeButton.setToggleState (true, juce::dontSendNotification);
+    };
+    monoModeButton.setToggleState (! polyModeButton.getToggleState(), juce::dontSendNotification);
 
     if (apvts.getParameter ("tune_snapScale") != nullptr)
         snapScaleAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (apvts, "tune_snapScale", snapScaleButton);
@@ -292,77 +341,95 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     snapScaleButton.onStateChange  = [this] { pitchTrace.setSnapToScale (snapScaleButton.getToggleState()); };
     autoScrollButton.onStateChange = [this] { pitchTrace.setAutoScroll (autoScrollButton.getToggleState()); };
 
+    //--------------------------------------------------------------------------
+    // Toolbar actions
+    undoButton.getProperties().set ("icon", "undo");
+    redoButton.getProperties().set ("icon", "redo");
+    styleSegment (undoButton, "first");
+    styleSegment (redoButton, "last");
+    dockViewButton.getProperties().set ("icon", "dock");
     snapAllButton.getProperties().set ("accentButton", true);
-    for (auto* btn : { &undoButton, &redoButton, &autoKeyButton, &levelerButton, &dockViewButton, &snapAllButton, &loadWavButton, &exportMidiButton, &clearButton })
+    autoKeyButton.getProperties().set ("ghost", true);
+
+    for (auto* btn : { &undoButton, &redoButton, &autoKeyButton, &levelerButton, &dockViewButton, &snapAllButton, &fileMenuButton })
     {
         btn->setLookAndFeel (&laf);
         addAndMakeVisible (btn);
     }
 
-    undoButton.setTooltip ("Undo last note edit (Ctrl+Z)");
+    undoButton.setTooltip ("Undo (Ctrl+Z)");
     undoButton.onClick = [this] { pitchTrace.undo(); };
 
-    redoButton.setTooltip ("Redo note edit (Ctrl+Y)");
+    redoButton.setTooltip ("Redo (Ctrl+Y)");
     redoButton.onClick = [this] { pitchTrace.redo(); };
 
-    autoKeyButton.setTooltip ("1-Click Auto-Key Detector (Ctrl+K): Detects vocal key & scale via Krumhansl-Kessler chromagram.");
+    autoKeyButton.setTooltip ("Detect key & scale from the notes on the piano roll (Ctrl+K)");
     autoKeyButton.onClick = [this] { pitchTrace.autoDetectKeyAndApply(); };
 
-    levelerButton.setTooltip ("1-Click Note Leveler (Ctrl+L): Balances quiet and loud vocal notes toward the phrase average.");
+    levelerButton.setTooltip ("Level (Ctrl+L): balance quiet and loud notes toward the phrase average");
     levelerButton.onClick = [this] { pitchTrace.levelAllNotesVolume (0.72f); };
 
-    dockViewButton.setTooltip ("Cycle Lower Bar & Dock height (Full -> Hide Inspector Bar -> Compact Dock -> Max Piano Roll), or drag the splitter bar directly below the Piano Roll.");
+    dockViewButton.setTooltip ("Show / hide the panels under the piano roll (Ctrl+B)");
     dockViewButton.onClick = [this] { cycleDockLayoutPreset(); };
 
-    snapAllButton.setTooltip ("1-Click Snap All: Snaps every vocal note in the timeline to the active Key & Scale.");
+    snapAllButton.setTooltip ("Snap every note on the piano roll to the active key & scale");
     snapAllButton.onClick = [this] { pitchTrace.snapAllNotesToScale(); };
 
-    loadWavButton.setTooltip ("Load a vocal audio file (.wav, .aiff, .flac, .mp3) onto the Piano Roll.");
-    loadWavButton.onClick = [this] { pitchTrace.promptLoadAudioFile(); };
+    fileMenuButton.setTooltip ("Load audio, export MIDI or WAV, clear the piano roll");
+    fileMenuButton.onClick = [this] { showFileMenu(); };
 
-    exportMidiButton.setTooltip ("Export the tuned vocal melody as a standard .mid file.");
-    exportMidiButton.onClick = [this] { pitchTrace.promptExportMidiFile(); };
-
-    clearButton.setTooltip ("Clear the Piano Roll timeline.");
-    clearButton.onClick = [this] { pitchTrace.clearTimeline(); };
-
-    // 2. Selected-Note Quick Inspector Bar
-    inspectorNoteLabel.setFont (HarmonyEngineUI::font (11.0f, true, 0.08f));
-    inspectorNoteLabel.setColour (juce::Label::textColourId, HarmonyEngineColours::accentBright);
+    //--------------------------------------------------------------------------
+    // Selected-note inspector
+    inspectorNoteLabel.setFont (HarmonyEngineUI::font (14.0f, true));
+    inspectorNoteLabel.setColour (juce::Label::textColourId, HarmonyEngineColours::textPrimary);
     inspectorNoteLabel.setJustificationType (juce::Justification::centredLeft);
+    inspectorNoteLabel.setBorderSize ({});
     addAndMakeVisible (inspectorNoteLabel);
 
+    semiDownButton.setButtonText (minusSign);
+    semiUpButton.setButtonText ("+");
+    styleSegment (semiDownButton, "first");
+    styleSegment (semiUpButton, "last");
+    resetNoteButton.getProperties().set ("ghost", true);
     for (auto* b : { &semiDownButton, &semiUpButton, &resetNoteButton })
     {
         b->setLookAndFeel (&laf);
         addAndMakeVisible (b);
     }
-    semiDownButton.setTooltip ("Transpose selected note down 1 scale step / semitone (Down Arrow)");
-    semiUpButton.setTooltip ("Transpose selected note up 1 scale step / semitone (Up Arrow)");
-    resetNoteButton.setTooltip ("Restore selected note to its default pitch, formant, variation, and gain");
+    semiDownButton.setTooltip ("Transpose the selected note down one step (Down arrow)");
+    semiUpButton.setTooltip ("Transpose the selected note up one step (Up arrow)");
+    resetNoteButton.setTooltip ("Restore the selected note's original pitch, formant, variation and gain");
 
     semiDownButton.onClick  = [this] { pitchTrace.transposeSelectedNote (-1); };
     semiUpButton.onClick    = [this] { pitchTrace.transposeSelectedNote (1); };
     resetNoteButton.onClick = [this] { pitchTrace.resetSelectedNote(); };
 
-    auto setupInspectorSlider = [&] (juce::Slider& s, double minV, double maxV, double defV, const juce::String& suffix, const juce::String& tip)
+    auto setupInspectorSlider = [&] (juce::Slider& s, const juce::String& caption, double minV, double maxV, double defV,
+                                     const juce::String& suffix, const juce::String& tip, const char* role)
     {
-        s.setSliderStyle (juce::Slider::LinearHorizontal);
+        s.setSliderStyle (juce::Slider::LinearBar);
+        s.setSliderSnapsToMousePosition (false);
+        s.setMouseDragSensitivity (300);
         s.setRange (minV, maxV, 0.1);
         s.setValue (defV, juce::dontSendNotification);
         s.setDoubleClickReturnValue (true, defV);
         s.setTextValueSuffix (suffix);
-        s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 48, 20);
+        s.setNumDecimalPlacesToDisplay (1);
+        s.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        s.getProperties().set ("field", true);
+        s.getProperties().set ("caption", caption);
+        s.getProperties().set ("ringRole", role);
         s.setLookAndFeel (&laf);
         s.setTooltip (tip + " (double-click to reset)");
         addAndMakeVisible (s);
     };
 
-    setupInspectorSlider (noteCentsSlider,   -50.0, 50.0,  0.0,   " c",  "Fine pitch offset in cents for the selected note");
-    setupInspectorSlider (noteFormantSlider, -12.0, 12.0,  0.0,   " st", "Per-note Formant throat shift in semitones");
-    setupInspectorSlider (noteVarSlider,       0.0, 200.0, 100.0, "%",   "Per-note Vibrato & Pitch Variation scaling");
-    setupInspectorSlider (noteGainSlider,    -18.0, 12.0,  0.0,   " dB", "Per-note Volume Trim in dB");
-    setupInspectorSlider (noteSibSlider,     -18.0, 12.0,  0.0,   " dB", "Per-note Sibilant & Breath Balance (>3.8 kHz) in dB");
+    setupInspectorSlider (noteCentsSlider,   "Cents",     -50.0, 50.0,  0.0,   " c",  "Fine pitch offset for the selected note, in cents", "cyan");
+    setupInspectorSlider (noteFormantSlider, "Formant",   -12.0, 12.0,  0.0,   " st", "Formant shift for the selected note, in semitones", "accent");
+    setupInspectorSlider (noteVarSlider,     "Variation",   0.0, 200.0, 100.0, " %",  "Vibrato & pitch variation for the selected note", "cyan");
+    setupInspectorSlider (noteGainSlider,    "Gain",      -18.0, 12.0,  0.0,   " dB", "Volume trim for the selected note", "mint");
+    setupInspectorSlider (noteSibSlider,     "Breath",    -18.0, 12.0,  0.0,   " dB", "Breath & sibilance balance (>3.8 kHz) for the selected note", "mint");
+    noteVarSlider.setNumDecimalPlacesToDisplay (0);
 
     noteCentsSlider.onValueChange = [this]
     {
@@ -408,15 +475,19 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     };
     refreshSelectedNoteInspector();
 
-    // 3. 1-Click Vocal Style Buttons + Lookahead/Smooth
+    //--------------------------------------------------------------------------
+    // Style card: one-click styles, humanize, auto-smooth, lookahead
+    styleSegment (styleNaturalButton, "first");
+    styleSegment (stylePopButton, "middle");
+    styleSegment (styleHardButton, "last");
     for (auto* sb : { &styleNaturalButton, &stylePopButton, &styleHardButton })
     {
         sb->setLookAndFeel (&laf);
         addAndMakeVisible (sb);
     }
-    styleNaturalButton.setTooltip ("1-Click Preset: Soft, transparent natural vocal tuning (Center 58%, Variation 95%, Transition 26%, Sensitivity 52%, Humanize 50%).");
-    stylePopButton.setTooltip     ("1-Click Preset: Tight, polished modern pop vocal (Center 92%, Variation 55%, Transition 78%, Sensitivity 72%, Humanize 18%).");
-    styleHardButton.setTooltip    ("1-Click Preset: Instant T-Pain / Hyperpop hard snap (Center 100%, Variation 0%, Transition 100%, Sensitivity 85%, Humanize 0%).");
+    styleNaturalButton.setTooltip ("Natural: soft, transparent tuning (Center 58%, Variation 95%, Transition 26%, Sensitivity 52%, Humanize 50%)");
+    stylePopButton.setTooltip     ("Pop: tight, polished modern pop (Center 92%, Variation 55%, Transition 78%, Sensitivity 72%, Humanize 18%)");
+    styleHardButton.setTooltip    ("Hard tune: instant hard snap (Center 100%, Variation 0%, Transition 100%, Sensitivity 85%, Humanize 0%)");
 
     styleNaturalButton.onClick = [this] { applyQuickVocalStyle (0.58f, 0.52f, 0.95f, 0.26f, 45.0f, 0.50f); };
     stylePopButton.onClick     = [this] { applyQuickVocalStyle (0.92f, 0.72f, 0.55f, 0.78f, 18.0f, 0.18f); };
@@ -426,8 +497,10 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     humanizeSlider.setRange (0.0, 1.0, 0.01);
     humanizeSlider.setDoubleClickReturnValue (true, 0.50);
     humanizeSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 44, 20);
+    humanizeSlider.setColour (juce::Slider::textBoxTextColourId, HarmonyEngineColours::textPrimary);
+    humanizeSlider.getProperties().set ("ringRole", "mint");
     humanizeSlider.setLookAndFeel (&laf);
-    humanizeSlider.setTooltip ("HUMANIZE SLIDER (0%..100%): 0% = Off, 50% = Standard Natural Humanize (matches previous ON button), 100% = Extreme Humanize (steeper leaps, deeper scoops & organic vibrato bloom). Double-click for 50%.");
+    humanizeSlider.setTooltip ("Humanize: 0% = off, 50% = standard natural humanize, 100% = extreme (steeper leaps, deeper scoops, organic vibrato bloom). Double-click for 50%.");
     addAndMakeVisible (humanizeSlider);
     if (apvts.getParameter ("tune_humanizeAmount") != nullptr)
         humanizeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, "tune_humanizeAmount", humanizeSlider);
@@ -439,14 +512,16 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
         setParamNormalised ("tune_humanizeAmount", next);
     };
 
-    smoothButton.setButtonText ("AUTO-SMOOTH");
+    smoothButton.setButtonText ("Auto-smooth");
+    styleChip (smoothButton, "mint");
     smoothButton.setLookAndFeel (&laf);
-    smoothButton.setTooltip ("Auto-Smooth: Hands-free natural lookahead tuning.");
+    smoothButton.setTooltip ("Auto-smooth: hands-free natural lookahead tuning (locks the manual controls)");
     addAndMakeVisible (smoothButton);
 
-    lookaheadButton.setButtonText ("60ms LOOKAHEAD");
+    lookaheadButton.setButtonText ("Lookahead");
+    styleChip (lookaheadButton, "cyan");
     lookaheadButton.setLookAndFeel (&laf);
-    lookaheadButton.setTooltip ("Lookahead: Inspects incoming pitch 60 ms ahead for zero-lag note transitions.");
+    lookaheadButton.setTooltip ("Lookahead: inspects incoming pitch 60 ms ahead for zero-lag note transitions");
     addAndMakeVisible (lookaheadButton);
 
     smoothButton.onStateChange = [this] { updateControlStates(); };
@@ -457,12 +532,11 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
 
 TuneTab::~TuneTab()
 {
-    for (auto* tb : { &editToolButton, &cutToolButton, &advancedToolButton, &drawToolButton, &polyModeButton, &midiCleanButton,
-                      &snapScaleButton, &autoScrollButton, &smoothButton, &lookaheadButton })
+    for (auto* tb : { &editToolButton, &cutToolButton, &advancedToolButton, &drawToolButton, &monoModeButton, &polyModeButton,
+                      &midiCleanButton, &snapScaleButton, &autoScrollButton, &smoothButton, &lookaheadButton })
         tb->setLookAndFeel (nullptr);
 
-    for (auto* btn : { &undoButton, &redoButton, &autoKeyButton, &levelerButton, &dockViewButton, &snapAllButton,
-                       &loadWavButton, &exportMidiButton, &clearButton,
+    for (auto* btn : { &undoButton, &redoButton, &autoKeyButton, &levelerButton, &dockViewButton, &snapAllButton, &fileMenuButton,
                        &semiDownButton, &semiUpButton, &resetNoteButton,
                        &styleNaturalButton, &stylePopButton, &styleHardButton })
         btn->setLookAndFeel (nullptr);
@@ -473,8 +547,7 @@ TuneTab::~TuneTab()
 
 void TuneTab::refreshTheme()
 {
-    inspectorNoteLabel.setColour (juce::Label::textColourId,
-        HarmonyEngineColours::isLightChassis ? HarmonyEngineColours::accentDeep : HarmonyEngineColours::accentBright);
+    inspectorNoteLabel.setColour (juce::Label::textColourId, HarmonyEngineColours::textPrimary);
     for (auto* k : { &centerKnob, &sensitivityKnob, &variationKnob, &transitionKnob, &formantKnob, &vibratoKnob })
         k->refreshThemeColours();
     for (auto* s : { &noteCentsSlider, &noteFormantSlider, &noteVarSlider, &noteGainSlider, &noteSibSlider, &humanizeSlider })
@@ -519,7 +592,8 @@ void TuneTab::refreshSelectedNoteInspector()
 
     if (hasVoicedNote)
     {
-        inspectorNoteLabel.setText ("SELECTED NOTE:  " + PitchTraceComponent::midiNoteName (sel->targetMidi), juce::dontSendNotification);
+        inspectorNoteLabel.setText (PitchTraceComponent::midiNoteName (sel->targetMidi), juce::dontSendNotification);
+        inspectorNoteLabel.setColour (juce::Label::textColourId, HarmonyEngineColours::textPrimary);
         noteCentsSlider.setValue   (sel->fineCents,               juce::dontSendNotification);
         noteFormantSlider.setValue (sel->formantSemitones,        juce::dontSendNotification);
         noteVarSlider.setValue     (sel->noteVariation * 100.0f,  juce::dontSendNotification);
@@ -528,13 +602,15 @@ void TuneTab::refreshSelectedNoteInspector()
     }
     else
     {
-        inspectorNoteLabel.setText ("SELECTED NOTE:  None (Click any note)", juce::dontSendNotification);
+        inspectorNoteLabel.setText ("None", juce::dontSendNotification);
+        inspectorNoteLabel.setColour (juce::Label::textColourId, HarmonyEngineColours::textSecondary);
         noteCentsSlider.setValue   (0.0,   juce::dontSendNotification);
         noteFormantSlider.setValue (0.0,   juce::dontSendNotification);
         noteVarSlider.setValue     (100.0, juce::dontSendNotification);
         noteGainSlider.setValue    (0.0,   juce::dontSendNotification);
         noteSibSlider.setValue     (0.0,   juce::dontSendNotification);
     }
+    repaint (inspectorPanelArea);
 }
 
 void TuneTab::setActiveToolMode (PitchTraceComponent::ToolMode mode)
@@ -564,6 +640,37 @@ void TuneTab::updateControlStates()
     repaint();
 }
 
+void TuneTab::showFileMenu()
+{
+    juce::PopupMenu menu;
+    menu.setLookAndFeel (&HarmonyEngineLookAndFeel::shared());
+    menu.addItem (1, "Load audio...");
+    menu.addSeparator();
+    menu.addItem (2, "Export MIDI...");
+    menu.addItem (3, "Export WAV...", true, false);
+    menu.addSeparator();
+    menu.addItem (4, "Clear piano roll");
+
+    juce::Component::SafePointer<TuneTab> safeThis (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&fileMenuButton).withMinimumWidth (180),
+        [safeThis] (int result)
+        {
+            if (safeThis == nullptr) return;
+            auto& pt = safeThis->pitchTrace;
+            switch (result)
+            {
+                case 1: pt.promptLoadAudioFile();  break;
+                case 2: pt.promptExportMidiFile(); break;
+                case 3: pt.promptExportWavFile();  break;
+                case 4: pt.clearTimeline();        break;
+                default: break;
+            }
+        });
+}
+
+//==============================================================================
+// Lower-area visibility
+//==============================================================================
 void TuneTab::setInspectorVisibility (bool visible)
 {
     for (auto* c : std::initializer_list<juce::Component*> {
@@ -572,233 +679,120 @@ void TuneTab::setInspectorVisibility (bool visible)
         c->setVisible (visible);
 }
 
-void TuneTab::setMiddleRowVisibility (bool visible)
+void TuneTab::setDockVisibility (bool visible)
 {
     for (auto* c : std::initializer_list<juce::Component*> {
-            &pianoMask, &noteTriangle, &styleNaturalButton, &stylePopButton, &styleHardButton, &humanizeSlider, &smoothButton, &lookaheadButton })
-        c->setVisible (visible);
-}
-
-void TuneTab::setKnobRowVisibility (bool visible)
-{
-    for (auto* c : std::initializer_list<juce::Component*> {
-            &centerKnob, &sensitivityKnob, &variationKnob, &transitionKnob, &formantKnob, &vibratoKnob })
+            &scaleSelector, &autoKeyButton, &pianoMask,
+            &centerKnob, &sensitivityKnob, &variationKnob, &transitionKnob, &formantKnob, &vibratoKnob,
+            &styleNaturalButton, &stylePopButton, &styleHardButton, &humanizeSlider, &smoothButton, &lookaheadButton })
         c->setVisible (visible);
 }
 
 void TuneTab::cycleDockLayoutPreset()
 {
-    if (lowerDockHeight >= 255 && userInspectorHeight > 0)
-    {
-        userInspectorHeight = 0;
-        lowerDockHeight     = 234;
-    }
-    else if (lowerDockHeight >= 200)
-    {
-        userInspectorHeight = 0;
-        lowerDockHeight     = 172;
-    }
-    else if (lowerDockHeight > 0)
-    {
-        savedLowerDockHeight = defaultLowerDockHeight;
-        lowerDockHeight      = 0;
-    }
-    else
-    {
-        userInspectorHeight = defaultInspectorHeight;
-        lowerDockHeight     = defaultLowerDockHeight;
-    }
+    // Everything -> controls only -> piano roll only -> everything
+    if (showInspector && showDock)        { showInspector = false; }
+    else if (! showInspector && showDock) { showDock = false; }
+    else                                  { showInspector = true; showDock = true; }
 
     layoutBody (getBodyBounds());
     repaint();
 }
 
 //==============================================================================
-// Interactive Splitter Dragging (Adjust Lower Bar & Knob Dock Height)
+// Splitter: drag down to hide the lower panels, up to bring them back;
+// double-click toggles a full-height piano roll.
 //==============================================================================
 void TuneTab::mouseMove (const juce::MouseEvent& e)
 {
-    const auto pt = e.position.toInt();
-    const bool overMain = splitterBarArea.expanded (0, 3).contains (pt);
-    const bool overInsp = !inspectorBottomSplitArea.isEmpty() && inspectorBottomSplitArea.expanded (0, 3).contains (pt);
-    const bool overKnob = !knobTopSplitArea.isEmpty() && knobTopSplitArea.expanded (0, 3).contains (pt);
-
-    if (overMain != mainSplitterHovered || overInsp != inspSplitterHovered || overKnob != knobSplitterHovered)
+    const bool over = splitterBarArea.expanded (0, 2).contains (e.position.toInt());
+    if (over != splitterHovered)
     {
-        mainSplitterHovered = overMain;
-        inspSplitterHovered = overInsp;
-        knobSplitterHovered = overKnob;
+        splitterHovered = over;
         repaint (splitterBarArea.expanded (0, 4));
-        if (!inspectorBottomSplitArea.isEmpty())
-            repaint (inspectorBottomSplitArea.expanded (0, 4));
-        if (!knobTopSplitArea.isEmpty())
-            repaint (knobTopSplitArea.expanded (0, 4));
     }
-
-    if (overMain || overInsp || overKnob)
-        setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
-    else
-        setMouseCursor (juce::MouseCursor::NormalCursor);
+    setMouseCursor (over ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
 }
 
 void TuneTab::mouseExit (const juce::MouseEvent&)
 {
-    if (mainSplitterHovered || inspSplitterHovered || knobSplitterHovered)
+    if (splitterHovered)
     {
-        mainSplitterHovered = false;
-        inspSplitterHovered = false;
-        knobSplitterHovered = false;
+        splitterHovered = false;
         repaint (splitterBarArea.expanded (0, 4));
-        if (!inspectorBottomSplitArea.isEmpty())
-            repaint (inspectorBottomSplitArea.expanded (0, 4));
-        if (!knobTopSplitArea.isEmpty())
-            repaint (knobTopSplitArea.expanded (0, 4));
     }
     setMouseCursor (juce::MouseCursor::NormalCursor);
 }
 
 void TuneTab::mouseDown (const juce::MouseEvent& e)
 {
-    const auto pt = e.position.toInt();
-    dragStartMouseY     = e.position.y;
-    dragStartDockHeight = lowerDockHeight;
-    dragStartInspHeight = userInspectorHeight;
-    lastDragLayoutMs    = 0;
-
-    if (splitterBarArea.expanded (0, 3).contains (pt)
-        || (!knobTopSplitArea.isEmpty() && knobTopSplitArea.expanded (0, 3).contains (pt)))
-        activeSplitterDrag = SplitterDragMode::ResizeLowerDock;
-    else if (!inspectorBottomSplitArea.isEmpty() && inspectorBottomSplitArea.expanded (0, 3).contains (pt))
-        activeSplitterDrag = SplitterDragMode::ResizeInspectorOnly;
-    else
-        activeSplitterDrag = SplitterDragMode::None;
+    draggingSplitter = splitterBarArea.expanded (0, 2).contains (e.position.toInt());
+    dragStartMouseY  = e.position.y;
 }
 
 void TuneTab::mouseDrag (const juce::MouseEvent& e)
 {
-    if (activeSplitterDrag == SplitterDragMode::None)
+    if (! draggingSplitter)
         return;
 
-    // 60 Hz frame-rate cap on relayout prevents OS mouse-poll floods (500-1000 Hz) from
-    // starving CPU/cache while audio is streaming.
-    const juce::uint32 nowMs = juce::Time::getMillisecondCounter();
-    if (nowMs - lastDragLayoutMs < 14)
-        return;
+    const float dy = e.position.y - dragStartMouseY;
+    const bool anyShown = showInspector || showDock;
 
-    const int dy = juce::roundToInt (e.position.y - dragStartMouseY); // positive = dragged down
-
-    if (activeSplitterDrag == SplitterDragMode::ResizeLowerDock)
+    if (anyShown && dy > 60.0f)
     {
-        const int maxDock = juce::jmin (340, getBodyBounds().getHeight() - toolbarHeight - 150);
-        int nextDock = dragStartDockHeight - dy;
-
-        if (nextDock < 36)
-        {
-            nextDock = 0; // Snap to full-screen Piano Roll
-        }
-        else
-        {
-            nextDock = juce::jlimit (56, maxDock, nextDock);
-            if (nextDock >= 252 && userInspectorHeight == 0)
-                userInspectorHeight = defaultInspectorHeight;
-        }
-
-        if (std::abs (nextDock - lowerDockHeight) >= 2 || (nextDock == 0 && lowerDockHeight != 0))
-        {
-            lastDragLayoutMs = nowMs;
-            lowerDockHeight = nextDock;
-            if (lowerDockHeight > 0)
-                savedLowerDockHeight = lowerDockHeight;
-            layoutBody (getBodyBounds());
-            repaint();
-        }
+        showInspector = showDock = false;
+        dragStartMouseY = e.position.y;
+        layoutBody (getBodyBounds());
+        repaint();
     }
-    else if (activeSplitterDrag == SplitterDragMode::ResizeInspectorOnly)
+    else if (! anyShown && dy < -60.0f)
     {
-        int nextInsp = dragStartInspHeight - dy;
-        if (nextInsp < 20)
-            nextInsp = 0;
-        else
-            nextInsp = juce::jlimit (28, 64, nextInsp);
-
-        if (std::abs (nextInsp - userInspectorHeight) >= 2 || (nextInsp == 0 && userInspectorHeight != 0))
-        {
-            lastDragLayoutMs = nowMs;
-            const int delta = nextInsp - userInspectorHeight;
-            userInspectorHeight = nextInsp;
-            lowerDockHeight = juce::jlimit (160, 340, lowerDockHeight + delta);
-            savedLowerDockHeight = lowerDockHeight;
-            layoutBody (getBodyBounds());
-            repaint();
-        }
+        showInspector = showDock = true;
+        dragStartMouseY = e.position.y;
+        layoutBody (getBodyBounds());
+        repaint();
     }
 }
 
 void TuneTab::mouseUp (const juce::MouseEvent&)
 {
-    if (activeSplitterDrag != SplitterDragMode::None)
-    {
-        activeSplitterDrag = SplitterDragMode::None;
-        layoutBody (getBodyBounds());
-        repaint();
-    }
+    draggingSplitter = false;
 }
 
 void TuneTab::mouseDoubleClick (const juce::MouseEvent& e)
 {
-    const auto pt = e.position.toInt();
-    if (splitterBarArea.expanded (0, 4).contains (pt)
-        || (!knobTopSplitArea.isEmpty() && knobTopSplitArea.expanded (0, 4).contains (pt)))
-    {
-        if (lowerDockHeight > 0)
-        {
-            savedLowerDockHeight = lowerDockHeight;
-            lowerDockHeight = 0;
-        }
-        else
-        {
-            lowerDockHeight = juce::jmax (172, savedLowerDockHeight);
-            if (lowerDockHeight >= 252 && userInspectorHeight == 0)
-                userInspectorHeight = defaultInspectorHeight;
-        }
-        layoutBody (getBodyBounds());
-        repaint();
-    }
-    else if (!inspectorBottomSplitArea.isEmpty() && inspectorBottomSplitArea.expanded (0, 4).contains (pt))
-    {
-        if (userInspectorHeight > 0)
-        {
-            lowerDockHeight = juce::jmax (160, lowerDockHeight - (userInspectorHeight + 6));
-            userInspectorHeight = 0;
-        }
-        else
-        {
-            userInspectorHeight = defaultInspectorHeight;
-            lowerDockHeight = juce::jmax (defaultLowerDockHeight, lowerDockHeight + userInspectorHeight + 6);
-        }
-        layoutBody (getBodyBounds());
-        repaint();
-    }
+    if (! splitterBarArea.expanded (0, 3).contains (e.position.toInt()))
+        return;
+
+    const bool anyShown = showInspector || showDock;
+    showInspector = showDock = ! anyShown;
+    layoutBody (getBodyBounds());
+    repaint();
 }
 
 //==============================================================================
+// Key / scale / range selector (lives in the Scale card)
+//==============================================================================
 TuneTab::ScaleSelector::ScaleSelector (juce::AudioProcessorValueTreeState& apvts)
 {
-    auto setUp = [&] (juce::ComboBox& box, const juce::String& paramId, const juce::String& tooltip,
-                      std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>& attachment)
+    auto setUp = [&] (juce::ComboBox& box, const juce::String& paramId, const juce::String& caption, const juce::String& tooltip,
+                      std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>& attachment,
+                      juce::StringArray displayNames = {})
     {
         if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (paramId)))
-            box.addItemList (choice->choices, 1);
+            box.addItemList (displayNames.size() == choice->choices.size() ? displayNames : choice->choices, 1);
         box.setLookAndFeel (&HarmonyEngineLookAndFeel::shared());
         box.setJustificationType (juce::Justification::centredLeft);
+        box.getProperties().set ("caption", caption);
         box.setTooltip (tooltip);
         addAndMakeVisible (box);
         attachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (apvts, paramId, box);
     };
 
-    setUp (rangeBox, "tune_vocalRange", "Vocal Range Lock: Full, Soprano, Alto, Tenor, or Bass/Baritone", rangeAttachment);
-    setUp (rootBox,  "tune_root",       "Key: Root note of the song", rootAttachment);
-    setUp (modeBox,  "tune_mode",       "Scale: Major, Minor, or Custom 12-key scale", modeAttachment);
+    setUp (rootBox,  "tune_root",       "Key",   "Key: root note of the song", rootAttachment);
+    setUp (modeBox,  "tune_mode",       {}, "Scale: major, minor, or a custom 12-key scale", modeAttachment);
+    setUp (rangeBox, "tune_vocalRange", {}, "Vocal range lock: full, soprano, alto, tenor or bass", rangeAttachment,
+           { "Full range", "Soprano", "Alto", "Tenor", "Bass" });
 }
 
 TuneTab::ScaleSelector::~ScaleSelector()
@@ -808,323 +802,198 @@ TuneTab::ScaleSelector::~ScaleSelector()
     modeBox.setLookAndFeel (nullptr);
 }
 
-void TuneTab::ScaleSelector::paint (juce::Graphics& g)
-{
-    g.setFont (HarmonyEngineUI::font (10.0f, true, 0.2f));
-    g.setColour (HarmonyEngineColours::textSecondary);
-    g.drawText ("RANGE", rangeLabelArea, juce::Justification::centredRight);
-    g.drawText ("KEY",   keyLabelArea,   juce::Justification::centredRight);
-    g.drawText ("SCALE", scaleLabelArea, juce::Justification::centredRight);
-}
+void TuneTab::ScaleSelector::paint (juce::Graphics&) {}
 
 void TuneTab::ScaleSelector::resized()
 {
     auto r = getLocalBounds();
-    rangeLabelArea = r.removeFromLeft (44);
-    r.removeFromLeft (4);
-    rangeBox.setBounds (r.removeFromLeft (78));
-    r.removeFromLeft (8);
-    keyLabelArea = r.removeFromLeft (30);
-    r.removeFromLeft (4);
-    rootBox.setBounds (r.removeFromLeft (62));
-    r.removeFromLeft (8);
-    scaleLabelArea = r.removeFromLeft (42);
-    r.removeFromLeft (4);
-    modeBox.setBounds (r);
+    const int gap = 6;
+    const int w = r.getWidth() - 2 * gap;
+    rootBox.setBounds  (r.removeFromLeft (juce::roundToInt ((float) w * 0.30f)));
+    r.removeFromLeft (gap);
+    modeBox.setBounds  (r.removeFromLeft (juce::roundToInt ((float) w * 0.31f)));
+    r.removeFromLeft (gap);
+    rangeBox.setBounds (r);
 }
 
+//==============================================================================
+// Painting
 //==============================================================================
 void TuneTab::paintBody (juce::Graphics& g)
 {
     using namespace HarmonyEngineColours;
-    HarmonyEngineUI::drawLiftedPanel (g, toolbarPanelArea, 10.0f);
 
-    if (!inspectorPanelArea.isEmpty())
+    // Selected-note inspector strip
+    if (! inspectorPanelArea.isEmpty())
     {
-        HarmonyEngineUI::drawLiftedPanel (g, inspectorPanelArea, 10.0f);
-        g.setFont (HarmonyEngineUI::font (9.0f, true, 0.12f));
+        HarmonyEngineUI::drawLiftedPanel (g, inspectorPanelArea, 8.0f);
+        g.setFont (HarmonyEngineUI::caption (10.5f));
         g.setColour (textSecondary);
-        g.drawText ("CENTS",     centsLabelArea,   juce::Justification::centredRight);
-        g.drawText ("FORMANT",   formantLabelArea, juce::Justification::centredRight);
-        g.drawText ("VARIATION", varLabelArea,     juce::Justification::centredRight);
-        g.drawText ("GAIN",      gainLabelArea,    juce::Justification::centredRight);
-        g.drawText ("SIB",       sibLabelArea,     juce::Justification::centredRight);
+        g.drawText ("NOTE", noteLabelArea, juce::Justification::centredLeft);
     }
 
-    if (!pianoPanelArea.isEmpty())
-        HarmonyEngineUI::drawLiftedPanel (g, pianoPanelArea, 10.0f);
-
-    if (!macroPanelArea.isEmpty())
+    // Dock cards
+    if (! scaleCardArea.isEmpty())
     {
-        HarmonyEngineUI::drawLiftedPanel (g, macroPanelArea, 10.0f);
-        if (macroPanelArea.getHeight() >= 64)
-        {
-            auto styleHeader = macroPanelArea.reduced (12, 4).removeFromTop (13);
-            g.setFont (HarmonyEngineUI::font (9.0f, true, 0.18f));
-            g.setColour (isLightChassis ? accentDeep : cyanBright);
-            g.drawText ("1-CLICK VOCAL STYLES   •   HUMANIZE SLIDER (50% = STD / 100% = EXTREME)", styleHeader, juce::Justification::centredLeft);
-        }
-        if (!humanizeLabelArea.isEmpty())
-        {
-            g.setFont (HarmonyEngineUI::font (9.5f, true, 0.10f));
-            g.setColour (mintAccent);
-            g.drawText ("HUMANIZE", humanizeLabelArea, juce::Justification::centredRight);
-        }
+        HarmonyEngineUI::drawLiftedPanel (g, scaleCardArea, 10.0f);
+        HarmonyEngineUI::drawLiftedPanel (g, knobCardArea, 10.0f);
+        HarmonyEngineUI::drawLiftedPanel (g, styleCardArea, 10.0f);
+        HarmonyEngineUI::drawCardTitle (g, scaleTitleArea, "Scale");
+        HarmonyEngineUI::drawCardTitle (g, knobTitleArea, smoothButton.getToggleState() ? "Correction  (auto-smooth on)" : "Correction");
+        HarmonyEngineUI::drawCardTitle (g, styleTitleArea, "Style");
+
+        g.setFont (HarmonyEngineUI::font (12.0f, false));
+        g.setColour (textSecondary);
+        g.drawText ("Humanize", humanizeLabelArea, juce::Justification::centredLeft);
     }
 
-    if (!knobPanelArea.isEmpty())
-        HarmonyEngineUI::drawLiftedPanel (g, knobPanelArea, 14.0f);
-
-    // Draw Interactive Splitter Bar right below the Piano Roll
-    if (!splitterBarArea.isEmpty())
+    // Splitter grip (only visible while hovered or dragged, so the layout stays quiet)
+    if (! splitterBarArea.isEmpty())
     {
-        const auto sb = splitterBarArea.toFloat();
-        const bool active = mainSplitterHovered || (activeSplitterDrag == SplitterDragMode::ResizeLowerDock);
-
-        g.setColour ((active ? cyanAccent : knobOutline).withAlpha (active ? 0.35f : 0.18f));
-        g.fillRoundedRectangle (sb.reduced (2.0f, 1.5f), 4.0f);
-
-        const auto grip = juce::Rectangle<float> (76.0f, 4.0f).withCentre (sb.getCentre());
-        g.setColour (active ? cyanBright : textSecondary.withAlpha (0.65f));
+        const bool active = splitterHovered || draggingSplitter;
+        const bool collapsed = ! (showInspector || showDock);
+        const auto grip = juce::Rectangle<float> (36.0f, 4.0f).withCentre (splitterBarArea.toFloat().getCentre());
+        g.setColour ((active ? textPrimary.withAlpha (0.45f) : hairline().withMultipliedAlpha (collapsed ? 2.5f : 1.6f)));
         g.fillRoundedRectangle (grip, 2.0f);
-
-        g.setFont (HarmonyEngineUI::font (8.2f, true, 0.10f));
-        g.setColour (active ? cyanBright : textSecondary.withAlpha (0.70f));
-        const juce::String hint = (lowerDockHeight == 0)
-            ? "▲ DRAG UP OR DBL-CLICK TO RESTORE LOWER BARS"
-            : "↕ DRAG TO ADJUST BAR HEIGHT  •  DBL-CLICK TO MAXIMIZE PIANO ROLL";
-        g.drawText (hint, sb.reduced (12.0f, 0.0f), juce::Justification::centredRight, false);
-    }
-
-    // Draw subtle secondary grip between Inspector Bar and 12-Key Scale Piano Row
-    if (!inspectorBottomSplitArea.isEmpty() && (inspSplitterHovered || activeSplitterDrag == SplitterDragMode::ResizeInspectorOnly))
-    {
-        const auto ib = inspectorBottomSplitArea.toFloat();
-        const auto grip = juce::Rectangle<float> (54.0f, 3.0f).withCentre (ib.getCentre());
-        g.setColour (accentBright.withAlpha (0.85f));
-        g.fillRoundedRectangle (grip, 1.5f);
-    }
-
-    // Draw subtle grip on top edge of the Knob Dock when hovered
-    if (!knobTopSplitArea.isEmpty() && (knobSplitterHovered || activeSplitterDrag == SplitterDragMode::ResizeLowerDock))
-    {
-        const auto kb = knobTopSplitArea.toFloat();
-        const auto grip = juce::Rectangle<float> (64.0f, 3.0f).withCentre (kb.getCentre());
-        g.setColour (cyanBright.withAlpha (0.85f));
-        g.fillRoundedRectangle (grip, 1.5f);
     }
 }
 
+//==============================================================================
+// Layout
+//==============================================================================
 void TuneTab::layoutBody (juce::Rectangle<int> bounds)
 {
-    // 1. Top Editor Toolbar
-    toolbarPanelArea = bounds.removeFromTop (toolbarHeight);
+    //--------------------------------------------------------------------------
+    // 1. Toolbar
+    auto tb = bounds.removeFromTop (toolbarHeight);
     {
-        auto tb = toolbarPanelArea.reduced (6, 5);
-        editToolButton.setBounds     (tb.removeFromLeft (68));
-        tb.removeFromLeft (3);
-        cutToolButton.setBounds      (tb.removeFromLeft (68));
-        tb.removeFromLeft (3);
-        advancedToolButton.setBounds (tb.removeFromLeft (74));
-        tb.removeFromLeft (3);
-        drawToolButton.setBounds     (tb.removeFromLeft (68));
-        tb.removeFromLeft (5);
-        polyModeButton.setBounds     (tb.removeFromLeft (100));
-        tb.removeFromLeft (3);
-        midiCleanButton.setBounds    (tb.removeFromLeft (78));
-        tb.removeFromLeft (4);
+        // Widths shrink together on narrow windows so nothing gets clipped.
+        constexpr int fixedW    = 4 * 34 + (10 + 12 + 12 + 6 + 6 + 12) + (6 + 10 + 6) + 8;
+        constexpr int flexibleW = 4 * 62 + 2 * 58 + 66 + 74 + 96 + 76 + 62 + 66;
+        const float k = juce::jlimit (0.70f, 1.0f, (float) (tb.getWidth() - fixedW) / (float) flexibleW);
+        auto w = [k] (int px) { return juce::roundToInt ((float) px * k); };
 
-        snapScaleButton.setBounds    (tb.removeFromLeft (76));
-        tb.removeFromLeft (3);
-        autoScrollButton.setBounds   (tb.removeFromLeft (80));
-        tb.removeFromLeft (4);
+        header.setBounds (tb.removeFromLeft (34));
+        tb.removeFromLeft (10);
+        for (auto* b : { &editToolButton, &cutToolButton, &advancedToolButton, &drawToolButton })
+            b->setBounds (tb.removeFromLeft (w (62)));
+        tb.removeFromLeft (12);
+        monoModeButton.setBounds (tb.removeFromLeft (w (58)));
+        polyModeButton.setBounds (tb.removeFromLeft (w (58)));
+        tb.removeFromLeft (12);
+        snapScaleButton.setBounds (tb.removeFromLeft (w (66)));
+        tb.removeFromLeft (6);
+        autoScrollButton.setBounds (tb.removeFromLeft (w (74)));
+        tb.removeFromLeft (6);
+        midiCleanButton.setBounds (tb.removeFromLeft (w (96)));
+        tb.removeFromLeft (12);
+        undoButton.setBounds (tb.removeFromLeft (34));
+        redoButton.setBounds (tb.removeFromLeft (34));
 
-        undoButton.setBounds         (tb.removeFromLeft (42));
-        tb.removeFromLeft (3);
-        redoButton.setBounds         (tb.removeFromLeft (42));
-        tb.removeFromLeft (3);
-        autoKeyButton.setBounds      (tb.removeFromLeft (64));
-        tb.removeFromLeft (3);
-        levelerButton.setBounds      (tb.removeFromLeft (60));
-
-        clearButton.setBounds        (tb.removeFromRight (46));
-        tb.removeFromRight (3);
-        exportMidiButton.setBounds   (tb.removeFromRight (72));
-        tb.removeFromRight (3);
-        loadWavButton.setBounds      (tb.removeFromRight (72));
-        tb.removeFromRight (3);
-        snapAllButton.setBounds      (tb.removeFromRight (66));
-        tb.removeFromRight (3);
-        dockViewButton.setBounds     (tb.removeFromRight (74));
+        fileMenuButton.setBounds (tb.removeFromRight (w (66)));
+        tb.removeFromRight (6);
+        dockViewButton.setBounds (tb.removeFromRight (34));
+        tb.removeFromRight (10);
+        levelerButton.setBounds (tb.removeFromRight (w (62)));
+        tb.removeFromRight (6);
+        snapAllButton.setBounds (tb.removeFromRight (w (76)));
     }
-    bounds.removeFromTop (4);
+    bounds.removeFromTop (10);
 
-    const int maxAllowedDock = juce::jmax (0, bounds.getHeight() - splitterHeight - 160);
-    const int effDockH = juce::jlimit (0, maxAllowedDock, lowerDockHeight);
+    //--------------------------------------------------------------------------
+    // 2. Lower panels (bottom-up)
+    const bool roomForDock = bounds.getHeight() >= 200 + dockHeight + inspectorHeight;
+    const bool dockOn = showDock && roomForDock;
+    const bool inspOn = showInspector && bounds.getHeight() >= 200 + inspectorHeight;
 
-    if (effDockH == 0)
-        dockViewButton.setButtonText ("BAR: HIDDEN");
-    else if (effDockH < 210)
-        dockViewButton.setButtonText ("BAR: COMPACT");
-    else if (userInspectorHeight == 0 || effDockH < 252)
-        dockViewButton.setButtonText ("BAR: NO INSP");
-    else
-        dockViewButton.setButtonText ("BAR: FULL");
+    scaleCardArea = knobCardArea = styleCardArea = {};
+    inspectorPanelArea = {};
 
-    inspectorPanelArea       = {};
-    inspectorBottomSplitArea = {};
-    knobTopSplitArea         = {};
-    pianoPanelArea           = {};
-    macroPanelArea           = {};
-    knobPanelArea            = {};
-
-    if (effDockH <= 0)
+    setDockVisibility (dockOn);
+    if (dockOn)
     {
-        setInspectorVisibility (false);
-        setMiddleRowVisibility (false);
-        setKnobRowVisibility   (false);
+        auto dock = bounds.removeFromBottom (dockHeight);
+        bounds.removeFromBottom (8);
 
-        splitterBarArea = bounds.removeFromBottom (splitterHeight);
-        pitchTrace.setBounds (bounds);
-        return;
+        const float side = juce::jlimit (0.86f, 1.0f, (float) dock.getWidth() / 1016.0f);
+        scaleCardArea = dock.removeFromLeft (juce::roundToInt (296.0f * side));
+        dock.removeFromLeft (8);
+        styleCardArea = dock.removeFromRight (juce::roundToInt (268.0f * side));
+        dock.removeFromRight (8);
+        knobCardArea = dock;
+
+        // Scale card: title + Detect, key/scale/range, 12-key mask
+        {
+            auto c = scaleCardArea.reduced (cardPad);
+            auto titleRow = c.removeFromTop (cardTitleH + 4);
+            autoKeyButton.setBounds (titleRow.removeFromRight (64).withSizeKeepingCentre (64, 22));
+            scaleTitleArea = titleRow;
+            c.removeFromTop (6);
+            scaleSelector.setBounds (c.removeFromTop (28));
+            c.removeFromTop (8);
+            pianoMask.setBounds (c);
+        }
+
+        // Correction card: six knobs
+        {
+            auto c = knobCardArea.reduced (cardPad);
+            knobTitleArea = c.removeFromTop (cardTitleH + 4);
+            c.removeFromTop (4);
+            const int colW = c.getWidth() / 6;
+            for (auto* k : { &centerKnob, &sensitivityKnob, &variationKnob, &transitionKnob, &formantKnob, &vibratoKnob })
+                k->setBounds (c.removeFromLeft (colW).reduced (2, 0));
+        }
+
+        // Style card: styles, humanize, chips
+        {
+            auto c = styleCardArea.reduced (cardPad);
+            styleTitleArea = c.removeFromTop (cardTitleH + 4);
+            c.removeFromTop (6);
+            auto styles = c.removeFromTop (28);
+            const int sw = styles.getWidth() / 3;
+            styleNaturalButton.setBounds (styles.removeFromLeft (sw));
+            stylePopButton.setBounds (styles.removeFromLeft (sw));
+            styleHardButton.setBounds (styles);
+            c.removeFromTop (10);
+            auto hum = c.removeFromTop (24);
+            humanizeLabelArea = hum.removeFromLeft (64);
+            humanizeSlider.setBounds (hum);
+            c.removeFromTop (10);
+            auto chips = c.removeFromTop (28);
+            const int cw = (chips.getWidth() - 6) / 2;
+            smoothButton.setBounds (chips.removeFromLeft (cw));
+            chips.removeFromLeft (6);
+            lookaheadButton.setBounds (chips);
+        }
     }
 
-    auto dockArea = bounds.removeFromBottom (effDockH);
+    setInspectorVisibility (inspOn);
+    if (inspOn)
+    {
+        inspectorPanelArea = bounds.removeFromBottom (inspectorHeight);
+        auto ir = inspectorPanelArea.reduced (12, 6);
+
+        noteLabelArea = ir.removeFromLeft (38);
+        inspectorNoteLabel.setBounds (ir.removeFromLeft (52));
+        semiDownButton.setBounds (ir.removeFromLeft (28));
+        semiUpButton.setBounds (ir.removeFromLeft (28));
+        ir.removeFromLeft (16);
+
+        resetNoteButton.setBounds (ir.removeFromRight (60));
+        ir.removeFromRight (12);
+
+        const int gap = 6;
+        const int fieldW = (ir.getWidth() - 4 * gap) / 5;
+        for (auto* sl : { &noteCentsSlider, &noteFormantSlider, &noteVarSlider, &noteGainSlider, &noteSibSlider })
+        {
+            sl->setBounds (ir.removeFromLeft (fieldW));
+            ir.removeFromLeft (gap);
+        }
+    }
+
+    //--------------------------------------------------------------------------
+    // 3. Splitter + piano roll (everything that's left)
     splitterBarArea = bounds.removeFromBottom (splitterHeight);
-
-    int inspH = 0;
-    int midH  = 0;
-    int knobH = 0;
-
-    if (effDockH >= 248 && userInspectorHeight >= 26)
-    {
-        inspH = juce::jlimit (26, 64, userInspectorHeight);
-        const int rem = effDockH - inspH - 12;
-        midH  = juce::jlimit (54, 92, juce::roundToInt (rem * (float) baseMiddleH / (float) (baseMiddleH + baseKnobH)));
-        knobH = juce::jmax (96, rem - midH);
-    }
-    else if (effDockH >= 145)
-    {
-        inspH = 0;
-        const int rem = effDockH - 6;
-        midH  = juce::jlimit (50, 80, juce::roundToInt (rem * 0.34f));
-        knobH = juce::jmax (88, rem - midH);
-    }
-    else
-    {
-        inspH = 0;
-        midH  = juce::jlimit (50, 96, effDockH);
-        knobH = 0;
-    }
-
-    // 2. Bottom Global Knobs Dock (if visible)
-    if (knobH > 0)
-    {
-        setKnobRowVisibility (true);
-        knobPanelArea = dockArea.removeFromBottom (knobH);
-        const int vPad = knobH >= 130 ? 10 : 4;
-        auto knobArea = knobPanelArea.reduced (16, vPad);
-        const int numKnobs = 6;
-        const int colW = knobArea.getWidth() / numKnobs;
-        for (auto* k : { &centerKnob, &sensitivityKnob, &variationKnob, &transitionKnob, &formantKnob, &vibratoKnob })
-            k->setBounds (knobArea.removeFromLeft (colW).reduced (4, 0));
-
-        if (midH > 0 || inspH > 0)
-            knobTopSplitArea = dockArea.removeFromBottom (6);
-    }
-    else
-    {
-        setKnobRowVisibility (false);
-    }
-
-    // 3. Middle Row: 12-Key Scale Keyboard (left) + 1-Click Style Presets (center) + Live Tuner (right)
-    if (midH > 0)
-    {
-        setMiddleRowVisibility (true);
-        auto midRow = (inspH > 0) ? dockArea.removeFromBottom (midH) : dockArea;
-
-        auto triArea = midRow.removeFromRight (126);
-        noteTriangle.setBounds (triArea);
-        midRow.removeFromRight (8);
-
-        pianoPanelArea = midRow.removeFromLeft (330);
-        pianoMask.setBounds (pianoPanelArea.reduced (6, juce::jmax (3, midRow.getHeight() >= 68 ? 6 : 3)));
-        midRow.removeFromLeft (8);
-
-        macroPanelArea = midRow;
-        auto mp = macroPanelArea.reduced (10, midRow.getHeight() >= 68 ? 6 : 4);
-        if (macroPanelArea.getHeight() >= 64)
-            mp.removeFromTop (14);
-
-        const int rowH = juce::jmax (18, (mp.getHeight() - 4) / 2);
-        auto styleRow = mp.removeFromTop (rowH);
-        const int styleW = (styleRow.getWidth() - 12) / 3;
-        styleNaturalButton.setBounds (styleRow.removeFromLeft (styleW));
-        styleRow.removeFromLeft (6);
-        stylePopButton.setBounds     (styleRow.removeFromLeft (styleW));
-        styleRow.removeFromLeft (6);
-        styleHardButton.setBounds    (styleRow);
-
-        mp.removeFromTop (4);
-        auto bottomRow = mp;
-        const int pillW = juce::jmin (112, bottomRow.getWidth() / 4);
-        lookaheadButton.setBounds (bottomRow.removeFromRight (pillW));
-        bottomRow.removeFromRight (6);
-        smoothButton.setBounds    (bottomRow.removeFromRight (pillW));
-        bottomRow.removeFromRight (8);
-        humanizeLabelArea         = bottomRow.removeFromLeft (62);
-        humanizeSlider.setBounds  (bottomRow.reduced (4, 0));
-
-        if (inspH > 0)
-            inspectorBottomSplitArea = dockArea.removeFromBottom (6);
-    }
-    else
-    {
-        setMiddleRowVisibility (false);
-    }
-
-    // 4. Selected-Note Quick Inspector Bar (right below the Piano Roll, adjustable height)
-    if (inspH > 0)
-    {
-        setInspectorVisibility (true);
-        inspectorPanelArea = dockArea;
-        const int vPad = juce::jmax (3, (inspectorPanelArea.getHeight() - 26) / 2);
-        auto ir = inspectorPanelArea.reduced (10, vPad);
-        inspectorNoteLabel.setBounds (ir.removeFromLeft (152));
-        semiDownButton.setBounds     (ir.removeFromLeft (56));
-        ir.removeFromLeft (4);
-        semiUpButton.setBounds       (ir.removeFromLeft (56));
-        ir.removeFromLeft (8);
-
-        resetNoteButton.setBounds    (ir.removeFromRight (82));
-        ir.removeFromRight (8);
-
-        const int groupW = ir.getWidth() / 5;
-        auto g1 = ir.removeFromLeft (groupW);
-        centsLabelArea = g1.removeFromLeft (36);
-        noteCentsSlider.setBounds (g1.reduced (2, 0));
-
-        auto g2 = ir.removeFromLeft (groupW);
-        formantLabelArea = g2.removeFromLeft (50);
-        noteFormantSlider.setBounds (g2.reduced (2, 0));
-
-        auto g3 = ir.removeFromLeft (groupW);
-        varLabelArea = g3.removeFromLeft (54);
-        noteVarSlider.setBounds (g3.reduced (2, 0));
-
-        auto g4 = ir.removeFromLeft (groupW);
-        gainLabelArea = g4.removeFromLeft (32);
-        noteGainSlider.setBounds (g4.reduced (2, 0));
-
-        auto g5 = ir;
-        sibLabelArea = g5.removeFromLeft (26);
-        noteSibSlider.setBounds (g5.reduced (2, 0));
-    }
-    else
-    {
-        setInspectorVisibility (false);
-    }
-
-    // 5. All remaining space is the 2D Piano Roll & Note Block Canvas
     pitchTrace.setBounds (bounds);
+    bypassVeilArea = bounds;
 }
