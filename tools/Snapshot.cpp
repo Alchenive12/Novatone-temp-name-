@@ -5,6 +5,8 @@
 #include "GUI/PitchTraceComponent.h"
 #include "GUI/HarmonyTab.h"
 #include "GUI/TuneTab.h"
+#include "PluginEditor.h"
+#include <fstream>
 
 static void save(juce::Component& c, const juce::File& f, float scale)
 {
@@ -63,6 +65,42 @@ static juce::AudioBuffer<float> makeProgression(double sr, std::vector<std::vect
             }
         }
     return b;
+}
+
+/** "A#m7/F" -> notes for a pad (bass in octave 2, chord in octave 3-4). Empty on failure. */
+static std::vector<int> chordNotes(const juce::String& name, juce::String& normalised)
+{
+    static const char* letters = "C D EF G A B";
+    if (name.isEmpty()) return {};
+    auto pcOf = [](juce::String s, int& used) -> int
+    {
+        const int base = juce::String("C D EF G A B").indexOfChar(juce::CharacterFunctions::toUpperCase(s[0]));
+        if (base < 0) return -1;
+        int pc = base; used = 1;
+        if (s.length() > 1 && (s[1] == '#' || s[1] == 's')) { ++pc; used = 2; }
+        else if (s.length() > 1 && s[1] == 'b') { --pc; used = 2; }
+        return (pc + 12) % 12;
+    };
+    juce::ignoreUnused(letters);
+    auto main = name.upToFirstOccurrenceOf("/", false, false);
+    int used = 0; const int root = pcOf(main, used);
+    if (root < 0) return {};
+    auto q = main.substring(used);
+    std::vector<int> iv = { 0, 4, 7 };
+    if (q.startsWith("maj7")) iv = { 0, 4, 7, 11 };
+    else if (q.startsWith("m7") || q.startsWith("min7")) iv = { 0, 3, 7, 10 };
+    else if (q.startsWith("m") && ! q.startsWith("maj")) iv = { 0, 3, 7 };
+    else if (q.startsWith("7")) iv = { 0, 4, 7, 10 };
+    else if (q.startsWith("sus2")) iv = { 0, 2, 7 };
+    else if (q.startsWith("sus4") || q.startsWith("sus")) iv = { 0, 5, 7 };
+    else if (q.startsWith("dim")) iv = { 0, 3, 6 };
+    else if (q.startsWith("5")) iv = { 0, 7 };
+    int bass = root;
+    if (name.containsChar('/')) { int u = 0; const int b = pcOf(name.fromFirstOccurrenceOf("/", false, false), u); if (b >= 0) bass = b; }
+    std::vector<int> notes { 36 + bass };
+    for (int i : iv) { int n = 48 + root + i; if (n < 52) n += 12; notes.push_back(n); }
+    normalised = name;
+    return notes;
 }
 
 static void pump(int ms)
@@ -179,6 +217,130 @@ int main(int argc, char** argv)
         playHead.playing = true;
         buf.clear(); proc->processBlock(buf, midi);
         playHead.playing = false;
+    }
+
+    const bool videoMode = argc > 8 && juce::String(argv[8]) == "video";
+    if (videoMode)
+    {
+        // ---- Harmony tab demo video: real vocal + chord chart pad on the sidechain ----
+        const juce::File vocalFile(juce::SystemStats::getEnvironmentVariable("VIDEO_VOCAL", ""));
+        const juce::File chordFile(juce::SystemStats::getEnvironmentVariable("VIDEO_CHORDS", ""));
+        const double startSec = juce::SystemStats::getEnvironmentVariable("VIDEO_START", "0").getDoubleValue();
+        const double lenSec   = juce::SystemStats::getEnvironmentVariable("VIDEO_LEN", "20").getDoubleValue();
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd(fm.createReaderFor(vocalFile));
+        if (rd == nullptr) { std::cout << "can't read vocal\n"; return 1; }
+        const double sr = 48000.0;
+        const int total = (int) (lenSec * sr);
+        juce::AudioBuffer<float> vocal(2, total);
+        rd->read(&vocal, 0, total, (juce::int64) (startSec * rd->sampleRate), true, true);
+
+        // chord chart: lines "seconds chord" (seconds relative to the song)
+        struct ChordAt { double t; juce::String name; std::vector<int> notes; };
+        std::vector<ChordAt> chart;
+        for (auto line : juce::StringArray::fromLines(chordFile.loadFileAsString()))
+        {
+            line = line.trim();
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            ChordAt c; c.t = line.upToFirstOccurrenceOf(" ", false, false).getDoubleValue() - startSec;
+            juce::String norm; c.notes = chordNotes(line.fromFirstOccurrenceOf(" ", false, false).trim(), norm); c.name = norm;
+            if (! c.notes.empty()) chart.push_back(c);
+        }
+        // soft keys pad, re-struck at every chord change
+        juce::AudioBuffer<float> pad(2, total); pad.clear();
+        for (size_t k = 0; k < chart.size(); ++k)
+        {
+            const double t0 = chart[k].t, t1 = k + 1 < chart.size() ? chart[k + 1].t : lenSec;
+            const int a = juce::jmax(0, (int) (t0 * sr)), b = juce::jmin(total, (int) (t1 * sr));
+            if (b <= a) continue;
+            for (size_t vi = 0; vi < chart[k].notes.size(); ++vi)
+            {
+                const double f0 = 440.0 * std::pow(2.0, (chart[k].notes[vi] - 69) / 12.0);
+                const double amp = vi == 0 ? 0.10 : 0.06;
+                for (int h = 1; h <= 6; ++h)
+                {
+                    double ph = 0.7 * h + vi;
+                    const double ah = amp / std::pow(h, 1.4);
+                    for (int i = a; i < b; ++i)
+                    {
+                        const double t = (i - a) / sr;
+                        const double env = std::min(1.0, t / 0.01) * (0.55 + 0.45 * std::exp(-t * (0.8 + 0.4 * h))) * std::min(1.0, (b - i) / (sr * 0.03));
+                        ph += juce::MathConstants<double>::twoPi * f0 * h / sr;
+                        const float v = (float) (ah * env * std::sin(ph));
+                        pad.addSample(0, i, v); pad.addSample(1, i, v);
+                    }
+                }
+            }
+        }
+
+        auto setP = [&](const char* id, float plain) { if (auto* p = np->apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(plain)); };
+        auto layout = proc->getBusesLayout();
+        if (layout.inputBuses.size() > 1) layout.inputBuses.getReference(1) = juce::AudioChannelSet::stereo();
+        proc->setBusesLayout(layout);
+        const int block = 400; // 4 blocks per 30 fps frame
+        proc->prepareToPlay(sr, block);
+        setP("tune_bypass", 1.0f);
+        setP("harm_v1_on", 1.0f); setP("harm_v2_on", 1.0f);
+        setP("harm_v1_level", -5.0f); setP("harm_v2_level", -6.0f);
+        setP("harm_humanize", 0.35f);
+        setP("harm_source", 0.0f);
+
+        std::unique_ptr<juce::AudioProcessorEditor> ved(proc->createEditor());
+        ved->setSize(w, h);
+        ved->setVisible(true);
+        std::function<void(juce::Component&)> toHarmony = [&](juce::Component& c)
+        {
+            for (auto* ch : c.getChildren())
+                if (auto* pb = dynamic_cast<PresetBar*>(ch)) { pb->setActiveTab(1); if (pb->onTabChanged) pb->onTabChanged(1); }
+                else toHarmony(*ch);
+        };
+        toHarmony(*ved);
+        pump(200);
+
+        const int lat = proc->getLatencySamples();
+        juce::AudioBuffer<float> out(2, total + lat + block * 4); out.clear();
+        juce::AudioBuffer<float> big(4, block);
+        const auto frames = outDir.getChildFile("frames");
+        frames.deleteRecursively(); frames.createDirectory();
+        int frameNo = 0, pos = 0;
+        while (pos + block <= total + lat)
+        {
+            for (int i = 0; i < block; ++i)
+            {
+                const int src = pos + i;
+                const bool in = src < total;
+                big.setSample(0, i, in ? vocal.getSample(0, src) : 0.0f);
+                big.setSample(1, i, in ? vocal.getSample(1, src) : 0.0f);
+                big.setSample(2, i, in ? pad.getSample(0, src) : 0.0f);
+                big.setSample(3, i, in ? pad.getSample(1, src) : 0.0f);
+            }
+            proc->processBlock(big, midi);
+            out.copyFrom(0, pos, big, 0, 0, block);
+            out.copyFrom(1, pos, big, 1, 0, block);
+            pos += block;
+            if (pos % (block * 4) == 0 && pos <= total)
+            {
+                pump(60); // let the GUI timers pick up the engine state
+                auto img = ved->createComponentSnapshot(ved->getLocalBounds(), true, 1.0f);
+                auto f = frames.getChildFile("f" + juce::String(frameNo++).paddedLeft('0', 5) + ".png");
+                juce::FileOutputStream os(f);
+                juce::PNGImageFormat().writeImageToStream(img, os);
+            }
+        }
+        // audio heard at video time t = plugin output for input time t (drop the latency), plus the pad
+        juce::AudioBuffer<float> mix(2, total);
+        for (int c = 0; c < 2; ++c)
+            for (int i = 0; i < total; ++i)
+                mix.setSample(c, i, out.getSample(c, i + lat) + 0.8f * pad.getSample(c, i));
+        mix.applyGain(0.89f / juce::jmax(1.0e-6f, mix.getMagnitude(0, total)));
+        juce::WavAudioFormat wav;
+        auto af = outDir.getChildFile("video_audio.wav"); af.deleteFile();
+        std::unique_ptr<juce::AudioFormatWriter> wr(wav.createWriterFor(new juce::FileOutputStream(af), sr, 2, 16, {}, 0));
+        wr->writeFromAudioSampleBuffer(mix, 0, total);
+        std::cout << "frames: " << frameNo << ", latency " << lat << "\n";
+        ved.reset();
+        proc->releaseResources();
+        return 0;
     }
 
     if (harmonyTest)
