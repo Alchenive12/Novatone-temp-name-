@@ -2,6 +2,7 @@ name: Build
 
 # Actions budget rules (Away-from-home protocol):
 #  - doc-only commits don't build
+#  - every branch push builds once (no separate pull_request run, which would double the minutes)
 #  - branches build Linux + Windows; macOS only on main / manual run / release tag
 #  - plugin binaries are uploaded only on a manual "Run workflow", kept 1 day
 #  - pushing a v* tag builds everything and attaches zips to a GitHub Release
@@ -9,9 +10,7 @@ on:
   push:
     branches: ['**']
     tags: ['v*']
-    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.gitignore']
-  pull_request:
-    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.gitignore']
+    paths-ignore: ['**.md', 'docs/**', 'tools/**', 'LICENSE', '.gitignore']
   workflow_dispatch:
 
 concurrency:
