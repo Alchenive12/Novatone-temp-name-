@@ -16,6 +16,7 @@
 #include "PresetManager.h"
 #include "Poly/PolyClipSession.h"
 #include "Harmony/HarmonyEngine.h"
+#include "Harmony/HarmonyExporter.h"
 
 /**
     Standalone "NovaTone" Vocal Pitch, Time & Formant AudioProcessor.
@@ -82,6 +83,9 @@ public:
     /** Chord-aware harmony voices (Harmony tab); chords come from the sidechain. */
     const HarmonyEngine& getHarmonyEngine() const noexcept { return harmony; }
     bool isSidechainConnected() const noexcept { return sidechainConnected.load(); }
+
+    /** Records the harmony voices only (no lead) to a WAV while the host plays. */
+    HarmonyExporter& getHarmonyExporter() noexcept { return harmonyExporter; }
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -167,6 +171,7 @@ private:
     Poly::ClipSession polyClip;
 
     HarmonyEngine harmony;
+    HarmonyExporter harmonyExporter;
     juce::AudioBuffer<float> harmonyDry;
     std::atomic<bool> sidechainConnected { false };
     struct HarmonyVoiceParams { std::atomic<float>* on = nullptr; std::atomic<float>* mode = nullptr; std::atomic<float>* level = nullptr; std::atomic<float>* pan = nullptr; std::atomic<float>* formant = nullptr; };

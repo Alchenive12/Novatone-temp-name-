@@ -298,6 +298,9 @@ int main(int argc, char** argv)
         toHarmony(*ved);
         pump(200);
 
+        const bool testExport = juce::SystemStats::getEnvironmentVariable("VIDEO_EXPORT", "0") == "1";
+        if (testExport) { setP("harm_lead", -60.0f); np->getHarmonyExporter().arm(); }
+        playHead.pos = 0; playHead.playing = true;
         const int lat = proc->getLatencySamples();
         juce::AudioBuffer<float> out(2, total + lat + block * 4); out.clear();
         juce::AudioBuffer<float> big(4, block);
@@ -315,6 +318,7 @@ int main(int argc, char** argv)
                 big.setSample(2, i, in ? pad.getSample(0, src) : 0.0f);
                 big.setSample(3, i, in ? pad.getSample(1, src) : 0.0f);
             }
+            playHead.pos = pos;
             proc->processBlock(big, midi);
             out.copyFrom(0, pos, big, 0, 0, block);
             out.copyFrom(1, pos, big, 1, 0, block);
@@ -322,6 +326,12 @@ int main(int argc, char** argv)
             if (pos % (block * 4) == 0 && pos <= total)
             {
                 pump(60); // let the GUI timers pick up the engine state
+                if (testExport && frameNo == 100)
+                {
+                    auto im = ved->createComponentSnapshot(ved->getLocalBounds(), true, 1.0f);
+                    juce::FileOutputStream os(outDir.getChildFile("export_recording.png")); os.setPosition(0); os.truncate();
+                    juce::PNGImageFormat().writeImageToStream(im, os);
+                }
                 auto img = ved->createComponentSnapshot(ved->getLocalBounds(), true, 1.0f);
                 auto f = frames.getChildFile("f" + juce::String(frameNo++).paddedLeft('0', 5) + ".png");
                 juce::FileOutputStream os(f);
@@ -340,6 +350,24 @@ int main(int argc, char** argv)
         std::unique_ptr<juce::AudioFormatWriter> wr(wav.createWriterFor(new juce::FileOutputStream(af), sr, 2, 16, {}, 0));
         wr->writeFromAudioSampleBuffer(mix, 0, total);
         std::cout << "frames: " << frameNo << ", latency " << lat << "\n";
+        if (testExport)
+        {
+            playHead.playing = false;
+            big.clear(); proc->processBlock(big, midi);
+            pump(400);
+            auto& ex = np->getHarmonyExporter();
+            std::cout << "export state " << (int) ex.getState() << " file " << ex.getFile().getFullPathName() << " sec " << ex.getSecondsRecorded() << "\n";
+            {
+                auto img = ved->createComponentSnapshot(ved->getLocalBounds(), true, 1.0f);
+                juce::FileOutputStream os(outDir.getChildFile("export_ready.png")); os.setPosition(0); os.truncate();
+                juce::PNGImageFormat().writeImageToStream(img, os);
+            }
+            auto o = outDir.getChildFile("plugin_out_harmonies_only.wav"); o.deleteFile();
+            std::unique_ptr<juce::AudioFormatWriter> w2(wav.createWriterFor(new juce::FileOutputStream(o), sr, 2, 24, {}, 0));
+            juce::AudioBuffer<float> aligned(2, total);
+            for (int c = 0; c < 2; ++c) aligned.copyFrom(c, 0, out, c, lat, total);
+            w2->writeFromAudioSampleBuffer(aligned, 0, total);
+        }
         ved.reset();
         proc->releaseResources();
         return 0;

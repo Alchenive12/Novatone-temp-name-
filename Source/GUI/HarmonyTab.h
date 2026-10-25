@@ -5,6 +5,7 @@
 #include <memory>
 #include "ModuleTabs.h"
 #include "../Harmony/HarmonyEngine.h"
+#include "../Harmony/HarmonyExporter.h"
 
 /**
     Harmony tab: chord-aware harmony voices generated from the lead vocal, following the chords
@@ -18,7 +19,7 @@ class HarmonyTab : public juce::Component, private juce::Timer
 {
 public:
     HarmonyTab (juce::AudioProcessorValueTreeState& apvts, const HarmonyEngine& engine,
-                std::function<bool()> sidechainConnected);
+                HarmonyExporter& exporter, std::function<bool()> sidechainConnected);
     ~HarmonyTab() override;
 
     void paint (juce::Graphics&) override;
@@ -45,8 +46,33 @@ private:
         RotaryKnob level, pan, formant;
     };
 
+    /** Button you can drag out of the plugin: drops the exported WAV into the DAW. */
+    struct FileDragButton : public juce::TextButton
+    {
+        std::function<juce::File()> getFile;
+        void mouseDrag (const juce::MouseEvent& e) override
+        {
+            if (e.getDistanceFromDragStart() < 6 || dragging || getFile == nullptr) return;
+            const auto f = getFile();
+            if (! f.existsAsFile()) return;
+            dragging = true;
+            juce::DragAndDropContainer::performExternalDragDropOfFiles ({ f.getFullPathName() }, false, this, [this] { dragging = false; });
+        }
+        void mouseUp (const juce::MouseEvent& e) override { dragging = false; juce::TextButton::mouseUp (e); }
+        bool dragging = false;
+    };
+
+    void updateExportControls();
+    void paintExportBar (juce::Graphics&);
+
     juce::AudioProcessorValueTreeState& apvts;
     const HarmonyEngine& engine;
+    HarmonyExporter& exporter;
+    juce::TextButton exportButton, saveAsButton, showButton;
+    FileDragButton dragButton;
+    std::unique_ptr<juce::FileChooser> chooser;
+    juce::Rectangle<int> exportBar, exportStatus;
+    HarmonyExporter::State lastExportState = HarmonyExporter::State::idle;
     std::function<bool()> sidechainConnected;
 
     std::array<std::unique_ptr<VoiceCard>, HarmonyEngine::numVoices> voiceCards;

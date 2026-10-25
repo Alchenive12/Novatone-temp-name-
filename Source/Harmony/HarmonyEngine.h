@@ -210,6 +210,10 @@ public:
         }
     }
 
+    /** Harmony voices only (no lead), latency-aligned, for the last process() block. */
+    const float* getHarmonyOutL() const noexcept { return mixL.data(); }
+    const float* getHarmonyOutR() const noexcept { return mixR.data(); }
+
     //==========================================================================
     // GUI readouts (lock-free)
     int   getChord() const noexcept { return chords.getChord(); }

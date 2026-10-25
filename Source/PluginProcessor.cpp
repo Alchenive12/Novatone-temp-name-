@@ -333,6 +333,7 @@ void NovaToneAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
     tuneEngine.prepare(spec);
     polyClip.prepare(sampleRate, samplesPerBlock, (int)spec.numChannels);
     harmony.prepare(sampleRate, samplesPerBlock);
+    harmonyExporter.prepare(sampleRate, samplesPerBlock);
     harmonyDry.setSize((int)spec.numChannels, samplesPerBlock);
     alterEngine.prepare(spec);
     lastPublishedHopIndex = 0;
@@ -631,7 +632,10 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
         harmony.setTotalLatency(getLatencySamples());
         juce::AudioBuffer<float> dryView(harmonyDry.getArrayOfWritePointers(), juce::jmin(harmonyDry.getNumChannels(), buffer.getNumChannels()), buffer.getNumSamples());
         harmony.process(dryView, buffer);
+        harmonyExporter.push(harmony.getHarmonyOutL(), harmony.getHarmonyOutR(), buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
     }
+    else
+        harmonyExporter.push(nullptr, nullptr, buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
 
     outputGain.process(context);
     publishPeaks(block, outputPeak);

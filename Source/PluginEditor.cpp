@@ -405,7 +405,7 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
         repaint();
     }),
     workstationView(p.apvts, p.getPitchTraceQueue()),
-    harmonyView(p.apvts, p.getHarmonyEngine(), [&p] { return p.isSidechainConnected(); }),
+    harmonyView(p.apvts, p.getHarmonyEngine(), p.getHarmonyExporter(), [&p] { return p.isSidechainConnected(); }),
     masterBar(p.apvts, p.getInputPeakMeter(), p.getOutputPeakMeter())
 {
     if (defaultLookAndFeelUsers()++ == 0)

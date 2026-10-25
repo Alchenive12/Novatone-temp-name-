@@ -84,8 +84,8 @@ void HarmonyTab::VoiceCard::resized()
 }
 
 //==============================================================================
-HarmonyTab::HarmonyTab (juce::AudioProcessorValueTreeState& s, const HarmonyEngine& e, std::function<bool()> sc)
-    : apvts (s), engine (e), sidechainConnected (std::move (sc)),
+HarmonyTab::HarmonyTab (juce::AudioProcessorValueTreeState& s, const HarmonyEngine& e, HarmonyExporter& x, std::function<bool()> sc)
+    : apvts (s), engine (e), exporter (x), sidechainConnected (std::move (sc)),
       mixKnob (s, "harm_mix", "Harmonies", {}, {}, "accent"),
       leadKnob (s, "harm_lead", "Lead", {}, {}, "cyan"),
       humanizeKnob (s, "harm_humanize", "Humanize", {}, {}, "mint"),
@@ -102,10 +102,102 @@ HarmonyTab::HarmonyTab (juce::AudioProcessorValueTreeState& s, const HarmonyEngi
         addAndMakeVisible (*voiceCards[(size_t) i]);
     }
     voiceNotes.fill (-1);
+
+    // ---- Export harmonies ----
+    exportButton.setClickingTogglesState (false);
+    exportButton.onClick = [this]
+    {
+        using S = HarmonyExporter::State;
+        const auto st = exporter.getState();
+        if (st == S::armed || st == S::recording) exporter.stop();
+        else exporter.arm();
+        updateExportControls();
+    };
+    dragButton.setButtonText ("Drag WAV to FL");
+    dragButton.setTooltip ("Drag this into your FL Studio playlist (or any DAW). Drop it at the bar where you pressed play.");
+    dragButton.getProperties().set ("accentButton", true);
+    dragButton.setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+    dragButton.getFile = [this] { return exporter.getFile(); };
+    saveAsButton.setButtonText ("Save as...");
+    saveAsButton.setTooltip ("Save a copy of the exported harmonies somewhere else");
+    saveAsButton.onClick = [this]
+    {
+        const auto src = exporter.getFile();
+        if (! src.existsAsFile()) return;
+        chooser = std::make_unique<juce::FileChooser> ("Save harmonies", juce::File::getSpecialLocation (juce::File::userDesktopDirectory).getChildFile (src.getFileName()), "*.wav");
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [src] (const juce::FileChooser& fc)
+                              {
+                                  auto dest = fc.getResult();
+                                  if (dest == juce::File()) return;
+                                  src.copyFileTo (dest.withFileExtension ("wav"));
+                              });
+    };
+    showButton.setButtonText ("Show file");
+    showButton.setTooltip ("Open the folder with the exported harmonies");
+    showButton.onClick = [this] { if (exporter.getFile().existsAsFile()) exporter.getFile().revealToUser(); };
+    for (auto* b : { &exportButton, &saveAsButton, &showButton })
+        b->setLookAndFeel (&HarmonyEngineLookAndFeel::shared());
+    dragButton.setLookAndFeel (&HarmonyEngineLookAndFeel::shared());
+    for (juce::Component* c : { (juce::Component*) &exportButton, (juce::Component*) &dragButton, (juce::Component*) &saveAsButton, (juce::Component*) &showButton })
+        addAndMakeVisible (c);
+    updateExportControls();
+
     startTimerHz (20);
 }
 
-HarmonyTab::~HarmonyTab() { stopTimer(); }
+void HarmonyTab::updateExportControls()
+{
+    using S = HarmonyExporter::State;
+    const auto st = exporter.getState();
+    lastExportState = st;
+    exportButton.setButtonText (st == S::armed ? "Cancel" : st == S::recording ? "Stop" : st == S::ready ? "Export again" : "Export harmonies");
+    exportButton.setTooltip ("Records only the harmony voices (lead muted) to a WAV. Arm it, then play the part in FL Studio; stopping playback finishes the file.");
+    exportButton.getProperties().set ("accentButton", st != S::ready);
+    const bool ready = st == S::ready && exporter.getFile().existsAsFile();
+    dragButton.setVisible (ready);
+    saveAsButton.setVisible (ready);
+    showButton.setVisible (ready);
+    exportButton.repaint();
+    repaint (exportBar);
+}
+
+void HarmonyTab::paintExportBar (juce::Graphics& g)
+{
+    using namespace HarmonyEngineColours;
+    using S = HarmonyExporter::State;
+    HarmonyEngineUI::drawLiftedPanel (g, exportBar, 10.0f);
+    const auto st = exporter.getState();
+    auto fmt = [] (double sec)
+    {
+        const int m = (int) (sec / 60.0);
+        return juce::String (m) + ":" + juce::String (sec - m * 60.0, 1).paddedLeft ('0', 4);
+    };
+    juce::String text; juce::Colour dot = textSecondary;
+    switch (st)
+    {
+        case S::idle:      text = "Export the harmonies on their own (no lead) as a WAV"; break;
+        case S::armed:     text = "Armed - press play in FL Studio; stop playback when you're done"; dot = accent; break;
+        case S::recording: text = "Recording harmonies  " + fmt (exporter.getSecondsRecorded()) + "   (from " + fmt (exporter.getStartSeconds()) + " in the song)";
+                           dot = (juce::Time::getMillisecondCounter() / 400) % 2 ? accentBright : accent; break;
+        case S::finishing: text = "Finishing the file..."; dot = cyanAccent; break;
+        case S::ready:     text = exporter.getFile().getFileName() + "  -  " + fmt (exporter.getSecondsRecorded()) + ", starts at " + fmt (exporter.getStartSeconds());
+                           dot = mintAccent; break;
+        case S::error:     text = "Export failed: " + exporter.getError(); dot = accent; break;
+    }
+    g.setColour (dot);
+    g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ (float) exportStatus.getX() + 4.0f, (float) exportStatus.getCentreY() }));
+    g.setFont (HarmonyEngineUI::font (12.0f, st == S::recording || st == S::ready));
+    g.setColour (st == S::idle ? textSecondary : textPrimary);
+    g.drawFittedText (text, exportStatus.withTrimmedLeft (16), juce::Justification::centredLeft, 1);
+}
+
+HarmonyTab::~HarmonyTab()
+{
+    stopTimer();
+    for (auto* b : { &exportButton, &saveAsButton, &showButton }) b->setLookAndFeel (nullptr);
+    dragButton.setLookAndFeel (nullptr);
+}
 
 void HarmonyTab::refreshTheme()
 {
@@ -132,6 +224,8 @@ void HarmonyTab::timerCallback()
         }
     }
     repaint (chordCard.getUnion (keyboardCard));
+    if (exporter.getState() != lastExportState) updateExportControls();
+    else if (exporter.getState() == HarmonyExporter::State::recording) repaint (exportBar);
 }
 
 //==============================================================================
@@ -146,10 +240,11 @@ void HarmonyTab::paint (juce::Graphics& g)
     HarmonyEngineUI::drawLiftedPanel (g, mixCard, 10.0f);
     HarmonyEngineUI::drawCardTitle (g, mixCard.reduced (14, 12).removeFromTop (16), "Mix");
 
-    g.setFont (HarmonyEngineUI::font (11.5f, false));
+    paintExportBar (g);
+    g.setFont (HarmonyEngineUI::font (11.0f, false));
     g.setColour (textSecondary);
-    g.drawFittedText ("Route your beat or instrumental into NovaTone's sidechain input (FL Studio: send the beat's mixer track to this track as a "
-                      "sidechain, then pick it as the plugin's sidechain input). Harmonies follow its chords; without it they use the Tune tab's key & scale.",
+    g.drawFittedText ("Chords come from your beat on NovaTone's sidechain input (FL Studio: route the beat's mixer track to this track as a sidechain). "
+                      "Without it, harmonies use the Tune tab's key & scale.",
                       helpArea, juce::Justification::centredLeft, 2);
 }
 
@@ -280,8 +375,22 @@ void HarmonyTab::paintKeyboardCard (juce::Graphics& g, juce::Rectangle<int> area
 void HarmonyTab::resized()
 {
     auto r = getLocalBounds().reduced (12, 10);
-    helpArea = r.removeFromBottom (36);
-    r.removeFromBottom (6);
+    helpArea = r.removeFromBottom (30);
+    r.removeFromBottom (4);
+    exportBar = r.removeFromBottom (44);
+    r.removeFromBottom (10);
+    {
+        auto e = exportBar.reduced (8, 7);
+        exportButton.setBounds (e.removeFromLeft (150));
+        e.removeFromLeft (8);
+        showButton.setBounds (e.removeFromRight (92));
+        e.removeFromRight (6);
+        saveAsButton.setBounds (e.removeFromRight (92));
+        e.removeFromRight (6);
+        dragButton.setBounds (e.removeFromRight (140));
+        e.removeFromRight (10);
+        exportStatus = e;
+    }
 
     auto top = r.removeFromTop (juce::jmax (200, r.getHeight() - 240));
     chordCard = top.removeFromLeft (juce::roundToInt ((float) top.getWidth() * 0.30f));
