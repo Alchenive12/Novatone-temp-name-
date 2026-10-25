@@ -15,3 +15,14 @@ Use `-DJUCE_DIR=...` / `-DSIGNALSMITH_DIR=...` for local checkouts.
 - `main` / manual run: adds macOS.
 - Manual "Run workflow": zips uploaded as artifacts, kept 1 day.
 - Push a `v*` tag: all platforms, zips attached to a GitHub Release.
+
+## UI previews without a DAW
+```
+cmake -S . -B build-snap -DNOVATONE_BUILD_SNAPSHOT=ON
+cmake --build build-snap --target NovaToneSnapshot
+NovaToneSnapshot <outDir> [width height scale theme selectNote fileName]
+```
+Renders the editor to a PNG (on Linux run it under `xvfb-run`). Dev-only, never built in CI.
+Screenshots of the current design are in `docs/ui/`.
+
+The UI font is Inter (SIL Open Font License, see `Resources/Fonts/Inter-LICENSE.txt`).

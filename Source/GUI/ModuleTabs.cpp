@@ -1,4 +1,5 @@
 #include "ModuleTabs.h"
+#include "NovaToneFonts.h"
 #include "HarmonyEngineColours.h"
 #include <cmath>
 #include <limits>
@@ -9,31 +10,45 @@
 //==============================================================================
 namespace HarmonyEngineUI
 {
-    juce::Font font(float height, bool bold, float kerning)
+    namespace
     {
-        return juce::Font(juce::FontOptions(height, bold ? juce::Font::bold : juce::Font::plain)
-            .withKerningFactor(kerning));
+        juce::Typeface::Ptr loadTypeface(const char* data, int size)
+        {
+            return juce::Typeface::createSystemTypefaceFor(data, (size_t)size);
+        }
     }
 
-    void paintChassis(juce::Graphics& g, juce::Rectangle<int> boundsInt)
+    juce::Typeface::Ptr regularTypeface()
     {
-        using namespace HarmonyEngineColours;
-        const auto b = boundsInt.toFloat();
+        static juce::Typeface::Ptr tf = loadTypeface(NovaToneFonts::InterRegular_ttf, NovaToneFonts::InterRegular_ttfSize);
+        return tf;
+    }
 
-        juce::ColourGradient base(background, b.getCentreX(), b.getY(), backgroundDeep, b.getCentreX(), b.getBottom(), false);
-        g.setGradientFill(base);
-        g.fillRect(boundsInt);
+    juce::Typeface::Ptr semiBoldTypeface()
+    {
+        static juce::Typeface::Ptr tf = loadTypeface(NovaToneFonts::InterSemiBold_ttf, NovaToneFonts::InterSemiBold_ttfSize);
+        return tf;
+    }
 
-        const float haloAlpha = isLightChassis ? 0.22f : 0.09f;
-        juce::ColourGradient halo(glow.withAlpha(haloAlpha), b.getCentreX(), b.getY() - b.getHeight() * 0.08f,
-            glow.withAlpha(0.0f), b.getCentreX(), b.getY() + b.getHeight() * 0.65f, true);
-        g.setGradientFill(halo);
-        g.fillRect(boundsInt);
+    juce::Font font(float height, bool bold, float kerning)
+    {
+        // Inter is already tuned for small UI sizes; the old wide all-caps tracking is
+        // capped so labels read as modern UI text rather than engraved panel lettering.
+        auto tf = bold ? semiBoldTypeface() : regularTypeface();
+        auto options = tf != nullptr ? juce::FontOptions(tf) : juce::FontOptions();
+        return juce::Font(options.withHeight(height * 1.06f)
+                                 .withKerningFactor(juce::jlimit(-0.02f, 0.06f, kerning)));
+    }
 
-        juce::ColourGradient vignette(juce::Colours::transparentBlack, b.getCentreX(), b.getCentreY(),
-            juce::Colours::black.withAlpha(isLightChassis ? 0.06f : 0.24f), b.getX(), b.getY(), true);
-        g.setGradientFill(vignette);
-        g.fillRect(boundsInt);
+    juce::Font caption(float height)
+    {
+        return font(height, true, 0.06f);
+    }
+
+    void paintChassis(juce::Graphics& g, juce::Rectangle<int> bounds)
+    {
+        g.setColour(HarmonyEngineColours::background);
+        g.fillRect(bounds);
     }
 
     void drawLiftedPanel(juce::Graphics& g, juce::Rectangle<int> areaInt, float cornerRadius)
@@ -42,33 +57,16 @@ namespace HarmonyEngineUI
         if (areaInt.isEmpty()) return;
 
         const auto area = areaInt.toFloat();
-
-        // Zero-allocation analytical multi-layer drop shadow (replaces heap-allocating juce::DropShadow::drawForPath)
-        const float baseShadowAlpha = isLightChassis ? 0.045f : 0.14f;
-        g.setColour(juce::Colours::black.withAlpha(baseShadowAlpha));
-        g.fillRoundedRectangle(area.expanded(2.0f, 2.0f).translated(0.0f, 4.0f), cornerRadius + 2.0f);
-        g.setColour(juce::Colours::black.withAlpha(baseShadowAlpha * 1.4f));
-        g.fillRoundedRectangle(area.expanded(0.8f, 0.8f).translated(0.0f, 2.0f), cornerRadius + 1.0f);
-
-        juce::Path panelPath;
-        panelPath.addRoundedRectangle(area, cornerRadius);
-
-        juce::ColourGradient fill(panelLight, area.getCentreX(), area.getY(),
-            panel, area.getCentreX(), area.getBottom(), false);
-        g.setGradientFill(fill);
-        g.fillPath(panelPath);
-
-        // Top specular rim highlight
-        juce::Path rim;
-        rim.addRoundedRectangle(area.reduced(0.75f), juce::jmax(1.0f, cornerRadius - 0.75f));
-        const float rimAlpha = isLightChassis ? 0.90f : 0.14f;
-        juce::ColourGradient rimLight(juce::Colours::white.withAlpha(rimAlpha), area.getCentreX(), area.getY(),
-            juce::Colours::white.withAlpha(0.0f), area.getCentreX(), area.getY() + juce::jmin(28.0f, area.getHeight() * 0.45f), false);
-        g.setGradientFill(rimLight);
-        g.strokePath(rim, juce::PathStrokeType(1.1f));
-
-        g.setColour(knobOutline.withAlpha(isLightChassis ? 0.75f : 0.80f));
-        g.strokePath(panelPath, juce::PathStrokeType(1.0f));
+        const float r = juce::jmin(cornerRadius, 10.0f);
+        if (isLightChassis)
+        {
+            g.setColour(juce::Colours::black.withAlpha(0.05f));
+            g.fillRoundedRectangle(area.translated(0.0f, 1.0f), r);
+        }
+        g.setColour(panel);
+        g.fillRoundedRectangle(area, r);
+        g.setColour(hairline());
+        g.drawRoundedRectangle(area.reduced(0.5f), r, 1.0f);
     }
 
     void drawInsetGlass(juce::Graphics& g, juce::Rectangle<int> areaInt, float cornerRadius)
@@ -77,48 +75,14 @@ namespace HarmonyEngineUI
         if (areaInt.isEmpty()) return;
 
         const auto area = areaInt.toFloat();
-        juce::Path outer;
-        outer.addRoundedRectangle(area, cornerRadius);
-
-        if (isLightChassis)
-        {
-            juce::ColourGradient bezel(accentBright, area.getX(), area.getY(), accentDeep, area.getX(), area.getBottom(), false);
-            bezel.addColour(0.45, accent);
-            g.setGradientFill(bezel);
-            g.fillPath(outer);
-
-            const auto inner = area.reduced(2.0f);
-            juce::Path glass;
-            glass.addRoundedRectangle(inner, juce::jmax(1.0f, cornerRadius - 2.0f));
-            g.setColour(graphBackground);
-            g.fillPath(glass);
-        }
-        else
-        {
-            g.setColour(graphBackground);
-            g.fillPath(outer);
-            g.setColour(graphOutline);
-            g.strokePath(outer, juce::PathStrokeType(1.4f));
-        }
+        const float r = juce::jmin(cornerRadius, 10.0f);
+        g.setColour(graphBackground);
+        g.fillRoundedRectangle(area, r);
+        g.setColour(hairline());
+        g.drawRoundedRectangle(area.reduced(0.5f), r, 1.0f);
     }
 
-    void drawGlassGloss(juce::Graphics& g, juce::Rectangle<int> areaInt, float cornerRadius)
-    {
-        using namespace HarmonyEngineColours;
-        if (areaInt.isEmpty() || !isLightChassis) return;
-
-        const auto inner = areaInt.toFloat().reduced(2.5f);
-        juce::Path glass;
-        glass.addRoundedRectangle(inner, juce::jmax(1.0f, cornerRadius - 2.5f));
-        juce::Graphics::ScopedSaveState state(g);
-        g.reduceClipRegion(glass);
-
-        const float glossHeight = inner.getHeight() * 0.35f;
-        juce::ColourGradient gloss(juce::Colours::white.withAlpha(0.06f), inner.getX(), inner.getY(),
-            juce::Colours::white.withAlpha(0.0f), inner.getX(), inner.getY() + glossHeight, false);
-        g.setGradientFill(gloss);
-        g.fillRect(inner.withHeight(glossHeight));
-    }
+    void drawGlassGloss(juce::Graphics&, juce::Rectangle<int>, float) {}
 
     void drawInsetWell(juce::Graphics& g, juce::Rectangle<float> area, float cornerRadius)
     {
@@ -127,28 +91,92 @@ namespace HarmonyEngineUI
 
         g.setColour(graphBackground);
         g.fillRoundedRectangle(area, cornerRadius);
-        g.setColour(graphOutline);
-        g.drawRoundedRectangle(area, cornerRadius, 1.0f);
+        g.setColour(hairline());
+        g.drawRoundedRectangle(area.reduced(0.5f), cornerRadius, 1.0f);
+    }
+
+    void drawCardTitle(juce::Graphics& g, juce::Rectangle<int> area, const juce::String& title)
+    {
+        g.setFont(caption(10.5f));
+        g.setColour(HarmonyEngineColours::textSecondary);
+        g.drawText(title.toUpperCase(), area, juce::Justification::centredLeft, true);
     }
 
     void paintBypassVeil(juce::Graphics& g, juce::Rectangle<int> body)
     {
         using namespace HarmonyEngineColours;
-        const auto veil = body.toFloat().expanded(4.0f);
-        g.setColour(backgroundDeep.withAlpha(0.76f));
-        g.fillRoundedRectangle(veil, 12.0f);
+        const auto veil = body.toFloat();
+        g.setColour(backgroundDeep.withAlpha(0.72f));
+        g.fillRoundedRectangle(veil, 10.0f);
 
-        const auto f = font(12.0f, true, 0.35f);
-        const float w = juce::GlyphArrangement::getStringWidth(f, "PITCH ENGINE BYPASSED") + 40.0f;
+        const auto f = font(12.5f, true);
+        const juce::String text("Pitch correction bypassed");
+        const float w = juce::GlyphArrangement::getStringWidth(f, text) + 36.0f;
         const auto badge = juce::Rectangle<float>(w, 30.0f).withCentre(veil.getCentre());
         g.setColour(panelLight);
         g.fillRoundedRectangle(badge, 15.0f);
-        g.setColour(accent);
-        g.drawRoundedRectangle(badge, 15.0f, 1.2f);
+        g.setColour(hairline());
+        g.drawRoundedRectangle(badge.reduced(0.5f), 15.0f, 1.0f);
 
         g.setFont(f);
         g.setColour(textPrimary);
-        g.drawText("PITCH ENGINE BYPASSED", badge, juce::Justification::centred);
+        g.drawText(text, badge, juce::Justification::centred);
+    }
+
+    juce::Path segmentPath(juce::Rectangle<float> b, const juce::String& segment, float r)
+    {
+        const bool first = segment == "first", last = segment == "last", middle = segment == "middle";
+        juce::Path p;
+        if (middle)
+            p.addRectangle(b);
+        else
+            p.addRoundedRectangle(b.getX(), b.getY(), b.getWidth(), b.getHeight(), r, r,
+                                  !last, !first, !last, !first);
+        return p;
+    }
+
+    void drawIcon(juce::Graphics& g, const juce::String& icon, juce::Rectangle<float> area, juce::Colour colour)
+    {
+        const auto c = area.getCentre();
+        const float s = juce::jmin(area.getWidth(), area.getHeight()) * 0.5f;
+        juce::Path p;
+        const juce::PathStrokeType stroke(1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
+        g.setColour(colour);
+
+        if (icon == "undo" || icon == "redo")
+        {
+            const float dir = icon == "undo" ? 1.0f : -1.0f;
+            const float rad = s * 0.62f;
+            p.addCentredArc(c.x, c.y + s * 0.12f, rad, rad, 0.0f,
+                            dir > 0 ? -juce::MathConstants<float>::halfPi * 1.15f : juce::MathConstants<float>::halfPi * 1.15f,
+                            dir > 0 ? juce::MathConstants<float>::halfPi * 0.95f : -juce::MathConstants<float>::halfPi * 0.95f, true);
+            g.strokePath(p, stroke);
+            const auto tip = juce::Point<float>(c.x - dir * rad * 0.93f, c.y + s * 0.12f - rad * 0.38f);
+            juce::Path head;
+            head.startNewSubPath(tip.translated(dir * s * 0.02f, -s * 0.42f));
+            head.lineTo(tip);
+            head.lineTo(tip.translated(dir * s * 0.44f, s * 0.06f));
+            g.strokePath(head, stroke);
+        }
+        else if (icon == "dock")
+        {
+            const auto r = juce::Rectangle<float>(s * 1.5f, s * 1.3f).withCentre(c);
+            g.drawRoundedRectangle(r, 2.0f, 1.4f);
+            g.fillRect(r.withTop(r.getBottom() - r.getHeight() * 0.36f).reduced(1.5f, 1.5f));
+        }
+        else if (icon == "menu")
+        {
+            for (int i = -1; i <= 1; ++i)
+                g.fillEllipse(juce::Rectangle<float>(3.2f, 3.2f).withCentre({ c.x + (float)i * s * 0.55f, c.y }));
+        }
+        else if (icon == "chevronLeft" || icon == "chevronRight")
+        {
+            const float d = icon == "chevronLeft" ? 1.0f : -1.0f;
+            p.startNewSubPath(c.x + d * s * 0.22f, c.y - s * 0.42f);
+            p.lineTo(c.x - d * s * 0.22f, c.y);
+            p.lineTo(c.x + d * s * 0.22f, c.y + s * 0.42f);
+            g.strokePath(p, stroke);
+        }
     }
 }
 
@@ -195,44 +223,76 @@ void HarmonyEngineLookAndFeel::makePowerButton(juce::ToggleButton& button)
     button.setLookAndFeel(&shared());
 }
 
+juce::Typeface::Ptr HarmonyEngineLookAndFeel::getTypefaceForFont(const juce::Font& f)
+{
+    if (f.getTypefaceName() == juce::Font::getDefaultSansSerifFontName())
+        if (auto tf = f.isBold() ? semiBoldTypeface() : regularTypeface())
+            return tf;
+    return LookAndFeel_V4::getTypefaceForFont(f);
+}
+
 juce::Font HarmonyEngineLookAndFeel::getLabelFont(juce::Label& label)
 {
     if (dynamic_cast<juce::Slider*>(label.getParentComponent()) != nullptr)
-        return font(12.0f, true, 0.04f);
-    return font(11.5f, true, 0.14f);
+        return font(12.0f, true, 0.0f);
+    return font(12.0f, true, 0.0f);
 }
 
-juce::Font HarmonyEngineLookAndFeel::getComboBoxFont(juce::ComboBox&) { return font(11.5f, true, 0.08f); }
-juce::Font HarmonyEngineLookAndFeel::getPopupMenuFont() { return font(12.5f, false, 0.04f); }
+juce::Font HarmonyEngineLookAndFeel::getComboBoxFont(juce::ComboBox&) { return font(12.5f, true, 0.0f); }
+juce::Font HarmonyEngineLookAndFeel::getPopupMenuFont() { return font(13.0f, false, 0.0f); }
+
+namespace
+{
+    float comboCaptionWidth(const juce::ComboBox& box)
+    {
+        const auto cap = box.getProperties()["caption"].toString();
+        if (cap.isEmpty()) return 0.0f;
+        const float capW  = juce::GlyphArrangement::getStringWidth(font(12.0f, false), cap) + 6.0f;
+        const float textW = juce::GlyphArrangement::getStringWidth(font(12.5f, true), box.getText());
+        // Drop the caption rather than truncate the value on narrow layouts.
+        return (10.0f + capW + textW + 26.0f <= (float)box.getWidth()) ? capW : 0.0f;
+    }
+}
 
 void HarmonyEngineLookAndFeel::drawComboBox(juce::Graphics& g, int width, int height, bool isButtonDown,
     int, int, int, int, juce::ComboBox& box)
 {
     using namespace HarmonyEngineColours;
-    const auto b = juce::Rectangle<float>(0.0f, 0.0f, (float)width, (float)height).reduced(1.0f);
+    const auto b = juce::Rectangle<float>(0.0f, 0.0f, (float)width, (float)height).reduced(0.5f);
     const float corner = 6.0f;
+    const bool hovered = box.isMouseOver(true) || box.hasKeyboardFocus(true);
+    const bool ghost = box.getProperties()["ghost"];
 
-    const auto fieldBg = isLightChassis ? panel.darker(isButtonDown ? 0.08f : 0.03f)
-                                        : (isButtonDown ? graphBackground.darker(0.2f) : graphBackground);
-    g.setColour(fieldBg);
+    auto fill = ghost ? (hovered ? panelLight : juce::Colours::transparentBlack) : panelLight;
+    if (!ghost && hovered) fill = fill.brighter(isLightChassis ? 0.02f : 0.06f);
+    if (isButtonDown) fill = panelLight.darker(0.1f);
+    g.setColour(fill);
     g.fillRoundedRectangle(b, corner);
+    g.setColour(hovered ? textPrimary.withAlpha(0.16f) : hairline());
+    g.drawRoundedRectangle(b.reduced(0.5f), corner, 1.0f);
 
-    const bool hovered = box.hasKeyboardFocus(true) || box.isMouseOver(true);
-    g.setColour(hovered ? cyanAccent : knobOutline);
-    g.drawRoundedRectangle(b, corner, 1.2f);
+    const auto cap = box.getProperties()["caption"].toString();
+    if (cap.isNotEmpty() && comboCaptionWidth(box) > 0.0f)
+    {
+        g.setFont(font(12.0f, false));
+        g.setColour(textSecondary);
+        g.drawText(cap, b.withTrimmedLeft(10.0f), juce::Justification::centredLeft, false);
+    }
 
     const float cx = b.getRight() - 12.0f, cy = b.getCentreY();
     juce::Path chevron;
-    chevron.startNewSubPath(cx - 4.0f, cy - 2.0f);
-    chevron.lineTo(cx, cy + 2.5f);
-    chevron.lineTo(cx + 4.0f, cy - 2.0f);
-    g.setColour(isLightChassis ? accentDeep : cyanBright);
-    g.strokePath(chevron, juce::PathStrokeType(1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    chevron.startNewSubPath(cx - 3.5f, cy - 1.75f);
+    chevron.lineTo(cx, cy + 1.75f);
+    chevron.lineTo(cx + 3.5f, cy - 1.75f);
+    g.setColour(textSecondary);
+    g.strokePath(chevron, juce::PathStrokeType(1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 }
 
 void HarmonyEngineLookAndFeel::positionComboBoxText(juce::ComboBox& box, juce::Label& label)
 {
-    label.setBounds(10, 1, box.getWidth() - 28, box.getHeight() - 2);
+    const int left = 10 + juce::roundToInt(comboCaptionWidth(box));
+    label.setBounds(left, 1, box.getWidth() - left - 22, box.getHeight() - 2);
+    label.setBorderSize({});
     label.setFont(getComboBoxFont(box));
     label.setColour(juce::Label::textColourId, HarmonyEngineColours::textPrimary);
 }
@@ -241,71 +301,104 @@ void HarmonyEngineLookAndFeel::drawPopupMenuBackground(juce::Graphics& g, int wi
 {
     using namespace HarmonyEngineColours;
     const auto b = juce::Rectangle<float>(0.0f, 0.0f, (float)width, (float)height);
-    g.setColour(panelLight);
+    g.setColour(isLightChassis ? panelLight : panelLight.brighter(0.03f));
     g.fillRect(b);
-    g.setColour(cyanAccent.withAlpha(0.65f));
+    g.setColour(hairline().withMultipliedAlpha(1.6f));
     g.drawRect(b, 1.0f);
 }
 
 void HarmonyEngineLookAndFeel::drawPopupMenuItem(juce::Graphics& g, const juce::Rectangle<int>& area,
     bool isSeparator, bool isActive, bool isHighlighted, bool isTicked, bool,
-    const juce::String& text, const juce::String&, const juce::Drawable*, const juce::Colour*)
+    const juce::String& text, const juce::String& shortcutKeyText, const juce::Drawable*, const juce::Colour*)
 {
     using namespace HarmonyEngineColours;
     if (isSeparator)
     {
-        g.setColour(knobOutline);
-        g.fillRect(area.reduced(8, 0).withHeight(1).withY(area.getCentreY()));
+        g.setColour(hairline().withMultipliedAlpha(1.4f));
+        g.fillRect(area.reduced(10, 0).withHeight(1).withY(area.getCentreY()));
         return;
     }
 
-    auto r = area.toFloat().reduced(3.0f, 1.0f);
+    auto r = area.toFloat().reduced(4.0f, 1.0f);
     if (isHighlighted && isActive)
     {
-        g.setColour(cyanAccent.withAlpha(0.25f));
-        g.fillRoundedRectangle(r, 4.0f);
+        g.setColour(textPrimary.withAlpha(0.08f));
+        g.fillRoundedRectangle(r, 5.0f);
     }
     if (isTicked)
     {
-        g.setColour(mintAccent);
-        g.fillEllipse(juce::Rectangle<float>(6.0f, 6.0f).withCentre({ r.getX() + 10.0f, r.getCentreY() }));
+        g.setColour(cyanAccent);
+        g.fillEllipse(juce::Rectangle<float>(5.0f, 5.0f).withCentre({ r.getX() + 11.0f, r.getCentreY() }));
     }
 
-    g.setColour(isActive ? textPrimary : textSecondary.withAlpha(0.45f));
+    g.setColour(isActive ? textPrimary : textSecondary.withAlpha(0.5f));
     g.setFont(getPopupMenuFont());
-    g.drawText(text, r.withTrimmedLeft(22.0f), juce::Justification::centredLeft, true);
+    g.drawText(text, r.withTrimmedLeft(24.0f).withTrimmedRight(10.0f), juce::Justification::centredLeft, true);
+
+    if (shortcutKeyText.isNotEmpty())
+    {
+        g.setFont(font(12.0f, false));
+        g.setColour(textSecondary);
+        g.drawText(shortcutKeyText, r.withTrimmedRight(10.0f), juce::Justification::centredRight, true);
+    }
 }
 
 void HarmonyEngineLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour&,
     bool highlighted, bool down)
 {
     using namespace HarmonyEngineColours;
-    const auto b = button.getLocalBounds().toFloat().reduced(1.5f);
-    const float corner = (activeKnobStyle == KnobStyle::AnodizedStage) ? b.getHeight() * 0.48f : 6.0f;
+    const auto b = button.getLocalBounds().toFloat().reduced(0.5f);
+    const float corner = 6.0f;
+    const auto segment = button.getProperties()["segment"].toString();
+    const bool enabled = button.isEnabled();
 
-    const bool isAccentBtn = button.getProperties()["accentButton"];
-    if (isAccentBtn)
+    if (button.getProperties()["accentButton"])
     {
-        juce::ColourGradient fill(accentBright.withAlpha(down ? 0.78f : 0.92f), b.getX(), b.getY(),
-                                  accentDeep.withAlpha(0.92f), b.getX(), b.getBottom(), false);
-        g.setGradientFill(fill);
+        auto fill = accent;
+        if (highlighted) fill = accentBright;
+        if (down) fill = accentDeep;
+        g.setColour(fill.withMultipliedAlpha(enabled ? 1.0f : 0.4f));
         g.fillRoundedRectangle(b, corner);
-        g.setColour(accentBright);
-        g.drawRoundedRectangle(b, corner, 1.0f);
         return;
     }
 
-    const auto baseFill = isLightChassis
-        ? (down ? panel.darker(0.08f) : (highlighted ? panelLight.brighter(0.04f) : panelLight))
-        : (down ? graphBackground : (highlighted ? panelLight.brighter(0.12f) : panelLight));
+    const bool ghost = button.getProperties()["ghost"];
+    auto fill = ghost ? juce::Colours::transparentBlack : panelLight;
+    if (highlighted && enabled) fill = panelLight.brighter(isLightChassis ? 0.02f : 0.07f);
+    if (down) fill = panelLight.darker(0.12f);
 
-    g.setColour(baseFill);
-    g.fillRoundedRectangle(b, corner);
-    g.setColour(highlighted ? cyanAccent.withAlpha(0.85f) : knobOutline);
-    g.drawRoundedRectangle(b, corner, 1.0f);
+    const auto path = segment.isNotEmpty() ? segmentPath(b, segment, corner) : [&] { juce::Path p; p.addRoundedRectangle(b, corner); return p; }();
+    g.setColour(fill);
+    g.fillPath(path);
+    if (!ghost || highlighted)
+    {
+        g.setColour(hairline());
+        g.strokePath(path, juce::PathStrokeType(1.0f));
+    }
 }
 
-juce::Font HarmonyEngineLookAndFeel::getTextButtonFont(juce::TextButton&, int) { return font(10.5f, true, 0.14f); }
+void HarmonyEngineLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& button, bool highlighted, bool)
+{
+    using namespace HarmonyEngineColours;
+    const bool accentBtn = button.getProperties()["accentButton"];
+    auto colour = accentBtn ? (isLightChassis ? juce::Colours::white : juce::Colour(0xff111317))
+                            : (highlighted ? textPrimary : textPrimary.withAlpha(0.88f));
+    if (!button.isEnabled())
+        colour = colour.withMultipliedAlpha(0.38f);
+
+    const auto icon = button.getProperties()["icon"].toString();
+    if (icon.isNotEmpty())
+    {
+        drawIcon(g, icon, button.getLocalBounds().toFloat().reduced(6.0f), colour);
+        return;
+    }
+
+    g.setFont(getTextButtonFont(button, button.getHeight()));
+    g.setColour(colour);
+    g.drawText(button.getButtonText(), button.getLocalBounds().reduced(6, 0), juce::Justification::centred, false);
+}
+
+juce::Font HarmonyEngineLookAndFeel::getTextButtonFont(juce::TextButton&, int) { return font(12.0f, true, 0.0f); }
 
 void HarmonyEngineLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int width, int height,
     float sliderPos, float rotStart, float rotEnd, juce::Slider& slider)
@@ -481,48 +574,40 @@ void HarmonyEngineLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y,
     }
 
     //==========================================================================
-    // STYLE 4 & 5: NOVATONE STUDIO & AMPPIRE VALVE RIG
+    // STYLE 4 & 5: NOVATONE STUDIO & AMPPIRE - flat thin-ring dial
     //==========================================================================
-    const float ringR = r * 0.86f;
-    const float ringW = juce::jmax(3.2f, r * 0.11f);
-    juce::Path groove;
-    groove.addCentredArc(c.x, c.y, ringR, ringR, 0.0f, rotStart, rotEnd, true);
-    g.setColour(graphBackground);
-    g.strokePath(groove, juce::PathStrokeType(ringW + 1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-    if (sliderPos > 0.002f)
     {
-        juce::Path valueArc;
-        valueArc.addCentredArc(c.x, c.y, ringR, ringR, 0.0f, rotStart, angle, true);
-        g.setColour(ringCol.withAlpha(0.26f));
-        g.strokePath(valueArc, juce::PathStrokeType(ringW * 2.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour(ringCol);
-        g.strokePath(valueArc, juce::PathStrokeType(ringW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    }
+        const float ringR = r * 0.88f;
+        const float ringW = juce::jmax(2.5f, r * 0.075f);
+        const float alpha = slider.isEnabled() ? 1.0f : 0.45f;
 
-    const float bodyR = r * 0.68f;
-    const auto bodyBounds = juce::Rectangle<float>(bodyR * 2.0f, bodyR * 2.0f).withCentre(c);
+        juce::Path track;
+        track.addCentredArc(c.x, c.y, ringR, ringR, 0.0f, rotStart, rotEnd, true);
+        g.setColour(panelLight.brighter(isLightChassis ? 0.0f : 0.10f).withMultipliedAlpha(alpha));
+        g.strokePath(track, juce::PathStrokeType(ringW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
-    g.setColour(juce::Colours::black.withAlpha(0.34f));
-    g.fillEllipse(bodyBounds.expanded(1.5f).translated(0.0f, 2.5f));
+        // Bipolar parameters (e.g. formant) fill from the 12 o'clock position.
+        const bool bipolar = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0;
+        const float origin = bipolar ? rotStart + (float)slider.valueToProportionOfLength(0.0) * (rotEnd - rotStart) : rotStart;
+        if (std::abs(angle - origin) > 0.01f)
+        {
+            juce::Path valueArc;
+            valueArc.addCentredArc(c.x, c.y, ringR, ringR, 0.0f, juce::jmin(origin, angle), juce::jmax(origin, angle), true);
+            g.setColour(ringCol.withMultipliedAlpha(alpha));
+            g.strokePath(valueArc, juce::PathStrokeType(ringW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
 
-    juce::ColourGradient capFill(panelLight.brighter(0.18f), c.x, bodyBounds.getY(),
-                                 backgroundDeep, c.x, bodyBounds.getBottom(), false);
-    g.setGradientFill(capFill);
-    g.fillEllipse(bodyBounds);
+        const float bodyR = ringR - ringW - juce::jmax(3.0f, r * 0.10f);
+        const auto body = juce::Rectangle<float>(bodyR * 2.0f, bodyR * 2.0f).withCentre(c);
+        g.setColour(panelLight.withMultipliedAlpha(alpha));
+        g.fillEllipse(body);
+        g.setColour(hairline());
+        g.drawEllipse(body.reduced(0.5f), 1.0f);
 
-    g.setColour(knobOutline.brighter(0.18f));
-    g.drawEllipse(bodyBounds, 1.2f);
-
-    const auto p1 = c.getPointOnCircumference(bodyR * 0.28f, angle);
-    const auto p2 = c.getPointOnCircumference(bodyR * 0.82f, angle);
-    g.setColour(ringCol.brighter(0.35f));
-    g.drawLine({ p1, p2 }, 2.2f);
-
-    if (!slider.isEnabled())
-    {
-        g.setColour(backgroundDeep.withAlpha(0.55f));
-        g.fillEllipse(area);
+        const auto p1 = c.getPointOnCircumference(bodyR * 0.38f, angle);
+        const auto p2 = c.getPointOnCircumference(bodyR * 0.80f, angle);
+        g.setColour(textPrimary.withMultipliedAlpha(alpha));
+        g.drawLine({ p1, p2 }, 2.0f);
     }
 }
 
@@ -534,89 +619,96 @@ void HarmonyEngineLookAndFeel::drawToggleButton(juce::Graphics& g, juce::ToggleB
         drawPillButton(g, button, highlighted, down);
 }
 
-void HarmonyEngineLookAndFeel::drawPowerButton(juce::Graphics& g, juce::ToggleButton& button, bool, bool down)
+void HarmonyEngineLookAndFeel::drawPowerButton(juce::Graphics& g, juce::ToggleButton& button, bool highlighted, bool)
 {
     using namespace HarmonyEngineColours;
     constexpr float pi = juce::MathConstants<float>::pi;
 
     const bool on = !button.getToggleState();
-    const auto b = button.getLocalBounds().toFloat();
-    const float d = juce::jmin(b.getWidth(), b.getHeight()) - 4.0f;
+    const auto b = button.getLocalBounds().toFloat().reduced(0.5f);
+    const float d = juce::jmin(b.getWidth(), b.getHeight());
     if (d < 8.0f) return;
 
-    const auto c = b.getCentre();
-    const auto face = juce::Rectangle<float>(d, d).withCentre(c.translated(0.0f, down ? 0.5f : 0.0f));
+    const auto face = juce::Rectangle<float>(d, d).withCentre(b.getCentre());
+    g.setColour(on ? mintAccent.withAlpha(0.16f) : (highlighted ? panelLight.brighter(0.06f) : panelLight));
+    g.fillRoundedRectangle(face, 6.0f);
+    g.setColour(on ? mintAccent.withAlpha(0.35f) : hairline());
+    g.drawRoundedRectangle(face.reduced(0.5f), 6.0f, 1.0f);
 
-    const auto activeCol = isLightChassis ? accent : mintAccent;
-    g.setColour(on ? activeCol.withAlpha(0.22f) : (isLightChassis ? panel : graphBackground));
-    g.fillEllipse(face);
-    g.setColour(on ? activeCol : knobOutline);
-    g.drawEllipse(face, 1.5f);
-
-    const float iconR = d * 0.24f;
+    const float iconR = d * 0.22f;
     juce::Path glyph;
-    glyph.addCentredArc(face.getCentreX(), face.getCentreY() + 1.0f, iconR, iconR, 0.0f, pi * 0.23f, pi * 1.77f, true);
-    glyph.startNewSubPath(face.getCentreX(), face.getCentreY() - iconR * 1.2f);
-    glyph.lineTo(face.getCentreX(), face.getCentreY());
+    glyph.addCentredArc(face.getCentreX(), face.getCentreY() + 0.5f, iconR, iconR, 0.0f, pi * 0.25f, pi * 1.75f, true);
+    glyph.startNewSubPath(face.getCentreX(), face.getCentreY() - iconR * 1.25f);
+    glyph.lineTo(face.getCentreX(), face.getCentreY() - iconR * 0.15f);
 
-    g.setColour(on ? (isLightChassis ? accentDeep : activeCol.brighter(0.3f)) : textSecondary);
+    g.setColour(on ? mintAccent : textSecondary);
     g.strokePath(glyph, juce::PathStrokeType(1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 }
 
 void HarmonyEngineLookAndFeel::drawPillButton(juce::Graphics& g, juce::ToggleButton& button, bool highlighted, bool down)
 {
     using namespace HarmonyEngineColours;
-    const auto bounds = button.getLocalBounds().toFloat().reduced(1.5f).translated(0.0f, down ? 0.5f : 0.0f);
+    const auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
     const bool engaged = button.getToggleState();
-    const float corner = (activeKnobStyle == KnobStyle::AnodizedStage) ? bounds.getHeight() * 0.48f : 6.0f;
+    const bool enabled = button.isEnabled();
+    const float corner = 6.0f;
+    const auto segment = button.getProperties()["segment"].toString();
+    const bool chip = button.getProperties()["chip"];
 
+    juce::Colour activeCol = cyanAccent;
+    const auto role = button.getProperties()["pillRole"].toString();
+    if (role == "accent") activeCol = accent;
+    else if (role == "mint") activeCol = mintAccent;
+
+    juce::Path shape = segment.isNotEmpty() ? segmentPath(bounds, segment, corner)
+                                            : [&] { juce::Path p; p.addRoundedRectangle(bounds, corner); return p; }();
+
+    auto fill = panelLight;
     if (engaged)
-    {
-        juce::Colour activeCol = cyanAccent;
-        if (button.getProperties().contains("pillRole"))
-        {
-            const auto role = button.getProperties()["pillRole"].toString();
-            if (role == "accent") activeCol = accent;
-            else if (role == "mint") activeCol = mintAccent;
-        }
-        else if (button.getProperties().contains("pillColour"))
-        {
-            activeCol = accent;
-        }
+        fill = segment.isNotEmpty() ? (isLightChassis ? activeCol.withAlpha(0.22f) : activeCol.withAlpha(0.20f))
+                                    : activeCol.withAlpha(0.14f);
+    else if (highlighted && enabled)
+        fill = panelLight.brighter(isLightChassis ? 0.02f : 0.07f);
+    if (down) fill = fill.darker(0.1f);
 
-        if (isLightChassis)
-        {
-            juce::ColourGradient leaf(accentBright, bounds.getX(), bounds.getY(), accentDeep, bounds.getX(), bounds.getBottom(), false);
-            leaf.addColour(0.5, accent);
-            g.setGradientFill(leaf);
-            g.fillRoundedRectangle(bounds, corner);
-        }
-        else
-        {
-            g.setColour(activeCol.withAlpha(0.24f));
-            g.fillRoundedRectangle(bounds, corner);
-            g.setColour(activeCol);
-            g.drawRoundedRectangle(bounds, corner, 1.4f);
-        }
-    }
-    else
+    g.setColour(fill);
+    g.fillPath(shape);
+    g.setColour(engaged ? activeCol.withAlpha(segment.isNotEmpty() ? 0.0f : 0.35f) : hairline());
+    g.strokePath(shape, juce::PathStrokeType(1.0f));
+
+    auto textArea = bounds;
+    auto textCol = engaged ? (isLightChassis ? activeCol.darker(0.45f) : activeCol.brighter(0.25f))
+                           : (highlighted ? textPrimary : textSecondary);
+    if (!enabled) textCol = textCol.withMultipliedAlpha(0.4f);
+
+    g.setFont(font(12.0f, true, 0.0f));
+    if (chip)
     {
-        g.setColour(isLightChassis
-            ? (highlighted ? panelLight.brighter(0.04f) : panel)
-            : (highlighted ? panelLight.brighter(0.10f) : graphBackground));
-        g.fillRoundedRectangle(bounds, corner);
-        g.setColour(highlighted ? cyanAccent.withAlpha(0.6f) : knobOutline);
-        g.drawRoundedRectangle(bounds, corner, 1.0f);
+        // Status chip: small LED dot + label, centred as a group.
+        const float tw = juce::GlyphArrangement::getStringWidth(g.getCurrentFont(), button.getButtonText());
+        const float groupW = tw + 12.0f;
+        const float x0 = bounds.getCentreX() - groupW * 0.5f;
+        g.setColour(engaged ? activeCol : textSecondary.withAlpha(0.45f));
+        g.fillEllipse(juce::Rectangle<float>(6.0f, 6.0f).withCentre({ x0 + 3.0f, bounds.getCentreY() }));
+        textArea = juce::Rectangle<float>(x0 + 12.0f, bounds.getY(), tw + 2.0f, bounds.getHeight());
+        g.setColour(textCol);
+        g.drawText(button.getButtonText(), textArea, juce::Justification::centredLeft, false);
+        return;
     }
 
-    g.setColour(engaged ? textPrimary : (highlighted ? textPrimary : textSecondary));
-    g.setFont(font(10.5f, true, 0.14f));
-    g.drawText(button.getButtonText(), bounds, juce::Justification::centred);
+    g.setColour(textCol);
+    g.drawText(button.getButtonText(), textArea.reduced(4.0f, 0.0f), juce::Justification::centred, false);
 }
 
 void HarmonyEngineLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int width, int height,
     float sliderPos, float minSliderPos, float maxSliderPos, juce::Slider::SliderStyle style, juce::Slider& slider)
 {
+    if (style == juce::Slider::LinearBar && slider.getProperties()["field"])
+    {
+        drawValueField(g, x, y, width, height, sliderPos, slider);
+        return;
+    }
+
     if (style != juce::Slider::LinearHorizontal)
     {
         LookAndFeel_V4::drawLinearSlider(g, x, y, width, height, sliderPos, minSliderPos, maxSliderPos, style, slider);
@@ -624,27 +716,74 @@ void HarmonyEngineLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y,
     }
 
     using namespace HarmonyEngineColours;
-    const float alpha = slider.isEnabled() ? 1.0f : 0.4f;
+    const float alpha = slider.isEnabled() ? 1.0f : 0.35f;
     const auto area = juce::Rectangle<float>((float)x, (float)y, (float)width, (float)height);
-    const float thumbR = juce::jmin(7.5f, area.getHeight() * 0.38f);
+    const float thumbR = juce::jmin(6.0f, area.getHeight() * 0.32f);
 
-    const auto groove = area.withSizeKeepingCentre(area.getWidth() - 2.0f * thumbR, 5.0f);
-    g.setColour((isLightChassis ? panel.darker(0.12f) : graphBackground).withMultipliedAlpha(alpha));
-    g.fillRoundedRectangle(groove, 2.5f);
+    const auto groove = area.withSizeKeepingCentre(area.getWidth() - 2.0f * thumbR, 3.0f);
+    g.setColour(panelLight.brighter(isLightChassis ? 0.0f : 0.10f).withMultipliedAlpha(alpha));
+    g.fillRoundedRectangle(groove, 1.5f);
+
+    juce::Colour fillCol = cyanAccent;
+    const auto role = slider.getProperties()["ringRole"].toString();
+    if (role == "accent") fillCol = accent;
+    else if (role == "mint") fillCol = mintAccent;
 
     const float clampedX = juce::jlimit(groove.getX(), groove.getRight(), sliderPos);
-    const auto fillRect = groove.withRight(clampedX);
-    g.setColour(cyanAccent.withMultipliedAlpha(0.80f * alpha));
-    g.fillRoundedRectangle(fillRect, 2.5f);
-
-    g.setColour(knobOutline.withMultipliedAlpha(alpha));
-    g.drawRoundedRectangle(groove, 2.5f, 1.0f);
+    const bool bipolar = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0;
+    const float originX = bipolar ? groove.getX() + groove.getWidth() * (float)slider.valueToProportionOfLength(0.0) : groove.getX();
+    g.setColour(fillCol.withMultipliedAlpha(alpha));
+    g.fillRoundedRectangle(juce::Rectangle<float>(juce::jmin(originX, clampedX), groove.getY(),
+                                                  std::abs(clampedX - originX), groove.getHeight()), 1.5f);
 
     const auto c = juce::Point<float>(clampedX, area.getCentreY());
-    g.setColour(cyanBright.withMultipliedAlpha(alpha));
-    g.fillEllipse(c.x - thumbR, c.y - thumbR, 2.0f * thumbR, 2.0f * thumbR);
-    g.setColour(juce::Colours::white.withMultipliedAlpha(alpha));
-    g.fillEllipse(c.x - thumbR * 0.4f, c.y - thumbR * 0.4f, 0.8f * thumbR, 0.8f * thumbR);
+    g.setColour(juce::Colours::black.withAlpha(0.25f * alpha));
+    g.fillEllipse(juce::Rectangle<float>(2.0f * thumbR + 2.0f, 2.0f * thumbR + 2.0f).withCentre(c.translated(0.0f, 0.5f)));
+    g.setColour((isLightChassis ? juce::Colours::white : textPrimary).withMultipliedAlpha(alpha));
+    g.fillEllipse(juce::Rectangle<float>(2.0f * thumbR, 2.0f * thumbR).withCentre(c));
+}
+
+void HarmonyEngineLookAndFeel::drawValueField(juce::Graphics& g, int x, int y, int width, int height,
+    float sliderPos, juce::Slider& slider)
+{
+    using namespace HarmonyEngineColours;
+    const bool enabled = slider.isEnabled();
+    const auto area = juce::Rectangle<float>((float)x, (float)y, (float)width, (float)height).reduced(0.5f);
+    const float r = 6.0f;
+
+    g.setColour(panelLight.withMultipliedAlpha(enabled ? 1.0f : 0.6f));
+    g.fillRoundedRectangle(area, r);
+
+    juce::Colour fillCol = cyanAccent;
+    const auto role = slider.getProperties()["ringRole"].toString();
+    if (role == "accent") fillCol = accent;
+    else if (role == "mint") fillCol = mintAccent;
+
+    if (enabled)
+    {
+        const bool bipolar = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0;
+        const float originX = bipolar ? area.getX() + area.getWidth() * (float)slider.valueToProportionOfLength(0.0) : area.getX();
+        const float px = juce::jlimit(area.getX(), area.getRight(), sliderPos);
+        juce::Graphics::ScopedSaveState state(g);
+        juce::Path clip;
+        clip.addRoundedRectangle(area, r);
+        g.reduceClipRegion(clip);
+        g.setColour(fillCol.withAlpha(isLightChassis ? 0.28f : 0.22f));
+        g.fillRect(juce::Rectangle<float>(juce::jmin(originX, px), area.getY(), std::abs(px - originX), area.getHeight()));
+        g.setColour(fillCol);
+        g.fillRect(juce::Rectangle<float>(1.5f, area.getHeight()).withCentre({ px, area.getCentreY() }));
+    }
+
+    g.setColour(slider.isMouseOverOrDragging() && enabled ? textPrimary.withAlpha(0.18f) : hairline());
+    g.drawRoundedRectangle(area.reduced(0.5f), r, 1.0f);
+
+    auto text = area.reduced(9.0f, 0.0f);
+    g.setFont(font(12.0f, false));
+    g.setColour(textSecondary.withMultipliedAlpha(enabled ? 1.0f : 0.6f));
+    g.drawText(slider.getProperties()["caption"].toString(), text, juce::Justification::centredLeft, false);
+    g.setFont(font(12.0f, true));
+    g.setColour(textPrimary.withMultipliedAlpha(enabled ? 1.0f : 0.4f));
+    g.drawText(enabled ? slider.getTextFromValue(slider.getValue()) : juce::String("-"), text, juce::Justification::centredRight, false);
 }
 
 //==============================================================================
@@ -659,6 +798,7 @@ RotaryKnob::RotaryKnob(juce::AudioProcessorValueTreeState& apvts, const juce::St
     slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 76, 18);
     slider.setLookAndFeel(&HarmonyEngineLookAndFeel::shared());
     slider.setMouseDragSensitivity(200);
+    slider.setColour(juce::Slider::textBoxTextColourId, HarmonyEngineColours::textSecondary);
     if (!customRingColour.isTransparent())
         slider.getProperties().set("ringColour", (int)customRingColour.getARGB());
     if (semanticRingRole.isNotEmpty())
@@ -668,7 +808,8 @@ RotaryKnob::RotaryKnob(juce::AudioProcessorValueTreeState& apvts, const juce::St
     label.setText(labelText, juce::dontSendNotification);
     label.setJustificationType(juce::Justification::centred);
     label.setColour(juce::Label::textColourId, HarmonyEngineColours::textPrimary);
-    label.setFont(font(11.5f, true, 0.16f));
+    label.setFont(font(12.5f, true, 0.0f));
+    label.setBorderSize({});
     label.setInterceptsMouseClicks(false, false);
     addAndMakeVisible(label);
 }
@@ -678,7 +819,7 @@ RotaryKnob::~RotaryKnob() { slider.setLookAndFeel(nullptr); }
 void RotaryKnob::refreshThemeColours()
 {
     label.setColour(juce::Label::textColourId, HarmonyEngineColours::textPrimary);
-    slider.setColour(juce::Slider::textBoxTextColourId, HarmonyEngineColours::textPrimary);
+    slider.setColour(juce::Slider::textBoxTextColourId, HarmonyEngineColours::textSecondary);
     repaint();
 }
 
@@ -695,20 +836,23 @@ void RotaryKnob::setSuggestedValue(double value)
 void RotaryKnob::paint(juce::Graphics& g)
 {
     label.setColour(juce::Label::textColourId, HarmonyEngineColours::textPrimary);
-    if (subtitle.isNotEmpty() && getHeight() >= 116)
+    if (subtitle.isNotEmpty() && getHeight() >= 112)
     {
-        g.setFont(font(9.0f, false, 0.06f));
+        g.setFont(font(11.0f, false));
         g.setColour(HarmonyEngineColours::textSecondary);
-        g.drawText(subtitle, getLocalBounds().removeFromTop(32).withTrimmedTop(16), juce::Justification::centred, false);
+        g.drawText(subtitle, getLocalBounds().withTrimmedTop(16).removeFromTop(15), juce::Justification::centred, false);
     }
 }
 
 void RotaryKnob::resized()
 {
     auto bounds = getLocalBounds();
-    label.setBounds(bounds.removeFromTop(17));
-    if (subtitle.isNotEmpty() && getHeight() >= 116)
-        bounds.removeFromTop(14);
+    label.setBounds(bounds.removeFromTop(16));
+    if (subtitle.isNotEmpty() && getHeight() >= 112)
+        bounds.removeFromTop(17);
+    else
+        bounds.removeFromTop(2);
+    slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, juce::jmax(40, bounds.getWidth()), 18);
     slider.setBounds(bounds);
 }
 
@@ -723,23 +867,19 @@ ChoiceSelector::ChoiceSelector(juce::AudioProcessorValueTreeState& apvts, const 
         box.addItemList(choice->choices, 1);
     box.setLookAndFeel(&HarmonyEngineLookAndFeel::shared());
     box.setTooltip(tooltip);
+    box.getProperties().set("caption", captionText);
     addAndMakeVisible(box);
     attachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(apvts, parameterID, box);
 }
 
 ChoiceSelector::~ChoiceSelector() { box.setLookAndFeel(nullptr); }
 
-void ChoiceSelector::paint(juce::Graphics& g)
-{
-    g.setFont(font(10.0f, true, 0.2f));
-    g.setColour(HarmonyEngineColours::textSecondary);
-    g.drawText(caption, getLocalBounds().withWidth(getWidth() - 110), juce::Justification::centredRight);
-}
+void ChoiceSelector::paint(juce::Graphics&) {}
 
-void ChoiceSelector::resized() { box.setBounds(getLocalBounds().removeFromRight(102)); }
+void ChoiceSelector::resized() { box.setBounds(getLocalBounds()); }
 
 //==============================================================================
-// MODULE HEADER + TAB BASE
+// MODULE HEADER (now just the module's bypass switch) + TAB BASE
 //==============================================================================
 ModuleHeader::ModuleHeader(juce::AudioProcessorValueTreeState& apvts, const juce::String& moduleId,
     const juce::String& titleText, const juce::String& subtitleText)
@@ -747,7 +887,7 @@ ModuleHeader::ModuleHeader(juce::AudioProcessorValueTreeState& apvts, const juce
     powerAttachment(apvts, moduleId + "_bypass", powerButton)
 {
     HarmonyEngineLookAndFeel::makePowerButton(powerButton);
-    powerButton.setTooltip("Power: switch " + titleText + " on or off");
+    powerButton.setTooltip("Pitch correction on/off");
     addAndMakeVisible(powerButton);
 
     lastBypassed = powerButton.getToggleState();
@@ -774,42 +914,15 @@ void ModuleHeader::setTrailingComponent(juce::Component* component, int width, i
     resized();
 }
 
-void ModuleHeader::paint(juce::Graphics& g)
-{
-    using namespace HarmonyEngineColours;
-    const auto strip = getLocalBounds().reduced(14, 4);
-    drawLiftedPanel(g, strip, 10.0f);
-
-    auto text = strip.toFloat().reduced(10.0f, 0.0f);
-    text.removeFromLeft((float)powerButton.getWidth() + 12.0f);
-    if (trailingComponent != nullptr)
-        text.removeFromRight((float)trailingComponent->getWidth() + 12.0f);
-
-    const bool bypassed = isBypassed();
-    const auto titleFont = font(14.0f, true, 0.22f);
-    const float titleWidth = juce::GlyphArrangement::getStringWidth(titleFont, title) + 6.0f;
-    const auto titleArea = text.removeFromLeft(titleWidth);
-
-    g.setFont(titleFont);
-    g.setColour(bypassed ? textSecondary : (isLightChassis ? accentDeep : cyanBright));
-    g.drawText(title, titleArea, juce::Justification::centredLeft);
-
-    text.removeFromLeft(10.0f);
-    g.setColour(knobOutline);
-    g.fillRect(juce::Rectangle<float>(1.0f, 14.0f).withCentre({ text.getX(), text.getCentreY() }));
-    text.removeFromLeft(10.0f);
-
-    g.setFont(font(10.0f, true, 0.22f));
-    g.setColour(textSecondary);
-    g.drawText(subtitle, text, juce::Justification::centredLeft, true);
-}
+void ModuleHeader::paint(juce::Graphics&) {}
 
 void ModuleHeader::resized()
 {
-    auto strip = getLocalBounds().reduced(14, 4).reduced(10, 0);
-    powerButton.setBounds(strip.removeFromLeft(28).withSizeKeepingCentre(28, 28));
+    auto r = getLocalBounds();
+    const int d = juce::jmin(r.getWidth(), r.getHeight());
+    powerButton.setBounds(r.removeFromLeft(d).withSizeKeepingCentre(d, d));
     if (trailingComponent != nullptr)
-        trailingComponent->setBounds(strip.removeFromRight(trailingWidth).withSizeKeepingCentre(trailingWidth, trailingHeight));
+        trailingComponent->setBounds(r.removeFromRight(trailingWidth).withSizeKeepingCentre(trailingWidth, trailingHeight));
 }
 
 ModuleTab::ModuleTab(juce::AudioProcessorValueTreeState& apvts, const juce::String& moduleId,
@@ -822,7 +935,7 @@ ModuleTab::ModuleTab(juce::AudioProcessorValueTreeState& apvts, const juce::Stri
 
 juce::Rectangle<int> ModuleTab::getBodyBounds() const
 {
-    return getLocalBounds().withTrimmedTop(headerHeight).reduced(14, 8);
+    return getLocalBounds().reduced(12, 10);
 }
 
 void ModuleTab::paint(juce::Graphics& g)
@@ -834,11 +947,10 @@ void ModuleTab::paint(juce::Graphics& g)
 void ModuleTab::paintOverChildren(juce::Graphics& g)
 {
     if (header.isBypassed())
-        paintBypassVeil(g, getBodyBounds());
+        paintBypassVeil(g, bypassVeilArea.isEmpty() ? getBodyBounds() : bypassVeilArea);
 }
 
 void ModuleTab::resized()
 {
-    header.setBounds(getLocalBounds().removeFromTop(headerHeight));
     layoutBody(getBodyBounds());
 }

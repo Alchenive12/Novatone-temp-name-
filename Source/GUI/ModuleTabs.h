@@ -21,8 +21,14 @@ namespace HarmonyEngineUI
     void drawGlassGloss(juce::Graphics& g, juce::Rectangle<int> area, float cornerRadius);
     void drawInsetWell(juce::Graphics& g, juce::Rectangle<float> area, float cornerRadius);
     void paintBypassVeil(juce::Graphics& g, juce::Rectangle<int> body);
+    void drawCardTitle(juce::Graphics& g, juce::Rectangle<int> area, const juce::String& title);
+    void drawIcon(juce::Graphics& g, const juce::String& icon, juce::Rectangle<float> area, juce::Colour colour);
+    juce::Path segmentPath(juce::Rectangle<float> bounds, const juce::String& segment, float cornerRadius);
+    juce::Font caption(float height);
+    juce::Typeface::Ptr regularTypeface();
+    juce::Typeface::Ptr semiBoldTypeface();
 
-    constexpr int headerHeight = 46;
+    constexpr int headerHeight = 0;
 }
 
 //==============================================================================
@@ -42,6 +48,9 @@ public:
         bool shouldDrawButtonAsDown) override;
 
     juce::Font getLabelFont(juce::Label& label) override;
+    juce::Typeface::Ptr getTypefaceForFont(const juce::Font& font) override;
+    void drawButtonText(juce::Graphics& g, juce::TextButton& button,
+        bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
 
     void drawLinearSlider(juce::Graphics& g, int x, int y, int width, int height,
         float sliderPos, float minSliderPos, float maxSliderPos,
@@ -63,6 +72,9 @@ public:
     juce::Font getTextButtonFont(juce::TextButton& button, int buttonHeight) override;
 
     static void makePowerButton(juce::ToggleButton& button);
+
+    /** LinearBar slider drawn as a value field: caption left, value right, fill from the origin. */
+    void drawValueField(juce::Graphics& g, int x, int y, int width, int height, float sliderPos, juce::Slider& slider);
 
 private:
     HarmonyEngineLookAndFeel();
@@ -165,4 +177,5 @@ protected:
     virtual void layoutBody(juce::Rectangle<int> body) = 0;
 
     ModuleHeader header;
+    juce::Rectangle<int> bypassVeilArea; ///< Where the "bypassed" veil is drawn (defaults to the body).
 };

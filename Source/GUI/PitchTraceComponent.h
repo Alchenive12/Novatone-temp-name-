@@ -232,9 +232,9 @@ private:
 
     static constexpr int   maxTimelineHops  = 4096; // ~45 seconds at 11 ms hop
     static constexpr size_t maxUndoSteps    = 32;
-    static constexpr float pianoRulerWidth  = 52.0f;
+    static constexpr float pianoRulerWidth  = 48.0f;
     static constexpr float timeRulerHeight  = 24.0f;
-    static constexpr float coachBarHeight   = 26.0f;
+    static constexpr float coachBarHeight   = 24.0f;
 
     // Viewport state (vertical MIDI range and horizontal hop window):
     float viewCentreMidiNote     = 60.0f; // C4

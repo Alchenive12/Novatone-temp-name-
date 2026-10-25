@@ -19,6 +19,10 @@ else()
 endif()
 
 # ---- Signalsmith Stretch (formant / Alter shifter) --------------------------
+# Use Signalsmith's portable FFT on every platform: its optional Apple
+# Accelerate backend broke the macOS build.
+set(SIGNALSMITH_USE_ACCELERATE OFF CACHE BOOL "" FORCE)
+
 if (DEFINED SIGNALSMITH_DIR)
     add_subdirectory(${SIGNALSMITH_DIR} signalsmith-stretch EXCLUDE_FROM_ALL)
     set(SIGNALSMITH_SRC ${SIGNALSMITH_DIR})
@@ -50,6 +54,13 @@ juce_add_plugin(NovaTone
 # Several GUI headers include <JuceHeader.h>.
 juce_generate_juce_header(NovaTone)
 
+# Embedded UI font (Inter, SIL Open Font License - see Resources/Fonts).
+juce_add_binary_data(NovaToneFonts
+    HEADER_NAME NovaToneFonts.h
+    NAMESPACE   NovaToneFonts
+    SOURCES     Resources/Fonts/Inter-Regular.ttf Resources/Fonts/Inter-SemiBold.ttf)
+set_target_properties(NovaToneFonts PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 target_sources(NovaTone PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
@@ -78,6 +89,7 @@ target_compile_definitions(NovaTone PUBLIC
 target_link_libraries(NovaTone
     PRIVATE
         signalsmith-stretch
+        NovaToneFonts
         juce::juce_audio_utils
         juce::juce_audio_processors
         juce::juce_audio_formats
@@ -87,3 +99,21 @@ target_link_libraries(NovaTone
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# ---- Dev-only: headless editor snapshot tool (never built in CI) ------------
+option(NOVATONE_BUILD_SNAPSHOT "Build the NovaToneSnapshot UI preview tool" OFF)
+if (NOVATONE_BUILD_SNAPSHOT)
+    juce_add_gui_app(NovaToneSnapshot PRODUCT_NAME "NovaToneSnapshot" VERSION ${PROJECT_VERSION})
+    juce_generate_juce_header(NovaToneSnapshot)
+    get_target_property(_nt_sources NovaTone SOURCES)
+    list(FILTER _nt_sources INCLUDE REGEX "^Source/")
+    target_sources(NovaToneSnapshot PRIVATE tools/Snapshot.cpp ${_nt_sources})
+    target_include_directories(NovaToneSnapshot PRIVATE Source Source/DSP Source/GUI ${SIGNALSMITH_SRC})
+    target_compile_definitions(NovaToneSnapshot PRIVATE
+        JucePlugin_Name="NovaTone" JucePlugin_IsSynth=0 JucePlugin_IsMidiEffect=0
+        JucePlugin_ProducesMidiOutput=1 JucePlugin_WantsMidiInput=1
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_USE_MP3AUDIOFORMAT=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(NovaToneSnapshot PRIVATE signalsmith-stretch NovaToneFonts
+        juce::juce_audio_utils juce::juce_audio_processors juce::juce_audio_formats
+        juce::juce_dsp juce::juce_gui_basics juce::juce_recommended_config_flags)
+endif()
