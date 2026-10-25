@@ -15,6 +15,7 @@
 #include "DSP/ModuleBypass.h"
 #include "PresetManager.h"
 #include "Poly/PolyClipSession.h"
+#include "Harmony/HarmonyEngine.h"
 
 /**
     Standalone "NovaTone" Vocal Pitch, Time & Formant AudioProcessor.
@@ -77,6 +78,10 @@ public:
 
     /** Melodyne-style polyphonic clip (record/load, analyse, edit, playback). */
     Poly::ClipSession& getPolyClip() noexcept { return polyClip; }
+
+    /** Chord-aware harmony voices (Harmony tab); chords come from the sidechain. */
+    const HarmonyEngine& getHarmonyEngine() const noexcept { return harmony; }
+    bool isSidechainConnected() const noexcept { return sidechainConnected.load(); }
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -160,6 +165,16 @@ private:
 
     PresetManager presetManager;
     Poly::ClipSession polyClip;
+
+    HarmonyEngine harmony;
+    juce::AudioBuffer<float> harmonyDry;
+    std::atomic<bool> sidechainConnected { false };
+    struct HarmonyVoiceParams { std::atomic<float>* on = nullptr; std::atomic<float>* mode = nullptr; std::atomic<float>* level = nullptr; std::atomic<float>* pan = nullptr; std::atomic<float>* formant = nullptr; };
+    std::array<HarmonyVoiceParams, HarmonyEngine::numVoices> harmVoiceParams {};
+    std::atomic<float>* harmMixParam = nullptr;
+    std::atomic<float>* harmLeadParam = nullptr;
+    std::atomic<float>* harmHumanizeParam = nullptr;
+    std::atomic<float>* harmSourceParam = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NovaToneAudioProcessor)
 };

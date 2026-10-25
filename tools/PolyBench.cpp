@@ -6,6 +6,7 @@
 #include "Poly/PolyAnalyzer.h"
 #include "Poly/PolyRenderer.h"
 #include "Poly/PolyClipSession.h"
+#include "Harmony/HarmonyEngine.h"
 #include <random>
 #include <map>
 #include <set>
@@ -632,6 +633,84 @@ void runFile(const juce::String& path)
     }
 }
 
+/** Harmony tab: sidechain chords + lead melody -> chord-aware harmony voices. */
+void runHarmony()
+{
+    std::cout << "\n=== Harmony (sidechain chords -> harmony voices) ===\n";
+    // Sidechain: piano C - Am - F - G, 2 s each. Lead: sung melody with vibrato.
+    struct Bar { std::vector<int> chord; int lead; int expAbove; int expBelow; const char* name; };
+    const std::vector<Bar> bars = {
+        { { 48, 52, 55, 60 }, 64, 67, 60, "C"  },
+        { { 45, 52, 57, 60 }, 64, 69, 60, "Am" },
+        { { 41, 48, 53, 57 }, 65, 69, 60, "F"  },
+        { { 43, 50, 55, 59 }, 62, 67, 59, "G"  } };
+    Case side { "side", Inst::Strings, {} }, lead { "lead", Inst::Choir, {} };
+    for (size_t b = 0; b < bars.size(); ++b)
+    {
+        for (int m : bars[b].chord) side.events.push_back({ m, 0.1 + 2.0 * b, 2.0 });
+        lead.events.push_back({ bars[b].lead, 0.1 + 2.0 * b + 0.05, 1.9 });
+    }
+    auto sideAudio = renderCase(side, 99), leadAudio = renderCase(lead, 5);
+    const int n = (int) std::min(sideAudio.size(), leadAudio.size());
+
+    HarmonyEngine h;
+    h.prepare(sr, blockSize);
+    const int latency = 8000;
+    h.setTotalLatency(latency);
+    h.setHumanize(0.0f);
+    h.setLeadGainDb(-60.0f); // harmonies only, to measure them
+    h.setUseSidechainChords(true);
+    HarmonyEngine::VoiceSettings above; above.on = true; above.mode = HarmonyEngine::chordAbove; above.levelDb = 0; above.pan = 0;
+    HarmonyEngine::VoiceSettings below; below.on = false; below.mode = HarmonyEngine::chordBelow; below.levelDb = 0;
+    h.setVoice(0, above); h.setVoice(1, below);
+
+    // Pass 1: voice "chord tone above" only; pass 2 "chord tone below" only (so each output is one voice)
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        if (pass == 1) { above.on = false; below.on = true; h.reset(); h.setVoice(0, above); h.setVoice(1, below); }
+        std::vector<float> out((size_t) n, 0.0f);
+        juce::AudioBuffer<float> sideBuf(2, blockSize), dry(2, blockSize), io(2, blockSize);
+        std::vector<int> chordAt, noteAt;
+        for (int pos = 0; pos + blockSize <= n; pos += blockSize)
+        {
+            for (int c = 0; c < 2; ++c) { sideBuf.copyFrom(c, 0, sideAudio.data() + pos, blockSize); dry.copyFrom(c, 0, leadAudio.data() + pos, blockSize); }
+            io.clear();
+            h.processSidechain(sideBuf);
+            h.process(dry, io);
+            std::copy(io.getReadPointer(0), io.getReadPointer(0) + blockSize, out.begin() + pos);
+            chordAt.push_back(h.getChord());
+            noteAt.push_back(h.getVoiceNote(pass == 0 ? 0 : 1));
+        }
+        std::cout << (pass == 0 ? "  voice 'chord tone above':\n" : "  voice 'chord tone below':\n");
+        for (size_t b = 0; b < bars.size(); ++b)
+        {
+            const int blk = (int) ((0.1 + 2.0 * b + 1.2) * sr) / blockSize;
+            const int c = chordAt[(size_t) blk];
+            const juce::String chordName = c < 0 ? juce::String("none") : noteName(c / ChordTracker::numQualities + 60).dropLastCharacters(1) + ChordTracker::qualitySuffix(c % ChordTracker::numQualities);
+            const int expected = pass == 0 ? bars[b].expAbove : bars[b].expBelow;
+            const int got = noteAt[(size_t) blk];
+            // audio: energy at expected pitch vs. a semitone either side, aligned by the latency
+            const int a0 = (int) ((0.1 + 2.0 * b + 0.8) * sr) + latency, len = (int) (0.9 * sr);
+            auto e = [&](double midi) { return bandEnergy(out, a0, len, midiToHz(midi)); };
+            const double ratio = 10.0 * std::log10(e(expected) / std::max(1e-12f, std::max(e(expected - 1), e(expected + 1))));
+            std::cout << "    " << juce::String(bars[b].name).paddedRight(' ', 3) << " detected " << chordName.paddedRight(' ', 6)
+                      << " lead " << noteName(bars[b].lead) << " -> voice " << (got >= 0 ? noteName(got) : juce::String("-")).paddedRight(' ', 4)
+                      << (got == expected ? " ok  " : " WRONG (expected " + noteName(expected) + ")")
+                      << "  audio at target: +" << juce::String(ratio, 1) << " dB over neighbours\n";
+        }
+        // Alignment: harmony onset vs. lead onset + latency (bar 2 boundary)
+        if (pass == 0)
+        {
+            // envelope cross-correlation of the harmony vs. the lead over the first two bars
+            auto envOf = [&](const std::vector<float>& x) { std::vector<double> e; for (int i = 0; i + 240 < (int) x.size(); i += 240) { double s = 0; for (int k = 0; k < 240; ++k) s += std::abs(x[(size_t) (i + k)]); e.push_back(s); } return e; };
+            const auto eh = envOf(out), el = envOf(leadAudio);
+            int best = 0; double bestC = -1;
+            for (int lag = 0; lag < 200; ++lag) { double c = 0; for (size_t i = 0; i + (size_t) lag < eh.size() && i < 800; ++i) c += el[i] * eh[i + (size_t) lag]; if (c > bestC) { bestC = c; best = lag; } }
+            std::cout << "    harmony vs lead delay: " << juce::String(best * 240 * 1000.0 / sr, 1) << " ms (plugin latency " << juce::String(latency * 1000.0 / sr, 1) << " ms)\n";
+        }
+    }
+}
+
 int main(int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI init;
@@ -682,6 +761,8 @@ int main(int argc, char** argv)
     }
     if (mode == "session" || mode == "all")
         runSession();
+    if (mode == "harmony" || mode == "all")
+        runHarmony();
     if (mode == "file" && argc > 2)
         runFile(argv[2]);
     if (mode == "listen")
