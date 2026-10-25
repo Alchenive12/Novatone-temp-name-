@@ -205,6 +205,23 @@ int main(int argc, char** argv)
     const float scale = argc > 4 ? (float) std::atof(argv[4]) : 1.0f;
     save(*ed, outDir.getChildFile(argc > 7 ? juce::String(argv[7]) : juce::String("editor.png")), scale);
 
+    if (polyTest)
+        if (auto* roll = findRoll(*ed))
+        {
+            auto& clip = np->getPolyClip();
+            const auto notesBefore = clip.getNotes();
+            const int editedBefore = (int) std::count_if(notesBefore.begin(), notesBefore.end(), [](auto& n) { return n.userEdited; });
+            roll->selectAdjacentNote(1);
+            roll->transposeSelectedNote(1);
+            auto t0 = juce::Time::getMillisecondCounter();
+            pump(100);
+            while (! clip.isRenderCurrent() && juce::Time::getMillisecondCounter() - t0 < 30000) pump(50);
+            const auto notesNow = clip.getNotes();
+            const int editedAfter = (int) std::count_if(notesNow.begin(), notesNow.end(), [](auto& n) { return n.userEdited; });
+            std::cout << "piano-roll edit -> session: edited notes " << editedBefore << " -> " << editedAfter
+                      << ", render current: " << (clip.isRenderCurrent() ? "yes" : "no") << "\n";
+        }
+
     ed.reset();
     proc->releaseResources();
     return 0;
