@@ -1,0 +1,86 @@
+name: Build
+
+# Actions budget rules (Away-from-home protocol):
+#  - doc-only commits don't build
+#  - branches build Linux + Windows; macOS only on main / manual run / release tag
+#  - plugin binaries are uploaded only on a manual "Run workflow", kept 1 day
+#  - pushing a v* tag builds everything and attaches zips to a GitHub Release
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.gitignore']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.gitignore']
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # needed only by the release step
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON((github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '["ubuntu-24.04","windows-2022","macos-14"]' || '["ubuntu-24.04","windows-2022"]') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build libasound2-dev libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxcomposite-dev libxext-dev \
+            libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
+
+      - name: Cache fetched dependencies (JUCE, Signalsmith)
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then GEN="-G Ninja"; else GEN=""; fi
+          cmake -S . -B build $GEN -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          cd build/NovaTone_artefacts/Release
+          OUT="$GITHUB_WORKSPACE/NovaTone-${RUNNER_OS}.zip"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip "$OUT" VST3/NovaTone.vst3 Standalone/NovaTone.exe > /dev/null
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            ditto -c -k --keepParent VST3/NovaTone.vst3 "$OUT"
+            ditto -c -k --keepParent Standalone/NovaTone.app "$GITHUB_WORKSPACE/NovaTone-macOS-Standalone.zip"
+          else
+            zip -qr "$OUT" VST3/NovaTone.vst3 Standalone/NovaTone
+          fi
+
+      - name: Upload (manual runs only, kept 1 day)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NovaTone-${{ runner.os }}
+          path: NovaTone-*.zip
+          retention-days: 1
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: NovaTone-*.zip
