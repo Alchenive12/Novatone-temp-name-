@@ -280,7 +280,8 @@ int main(int argc, char** argv)
         const int block = 400; // 4 blocks per 30 fps frame
         proc->prepareToPlay(sr, block);
         setP("tune_bypass", 1.0f);
-        setP("harm_v1_on", 1.0f); setP("harm_v2_on", 1.0f);
+        const int nVoices = juce::SystemStats::getEnvironmentVariable("VIDEO_VOICES", "2").getIntValue();
+        setP("harm_v1_on", 1.0f); setP("harm_v2_on", nVoices > 1 ? 1.0f : 0.0f);
         setP("harm_v1_level", -5.0f); setP("harm_v2_level", -6.0f);
         setP("harm_humanize", 0.35f);
         setP("harm_source", 0.0f);
@@ -328,10 +329,11 @@ int main(int argc, char** argv)
             }
         }
         // audio heard at video time t = plugin output for input time t (drop the latency), plus the pad
+        const float padMix = (float) juce::SystemStats::getEnvironmentVariable("VIDEO_PAD_MIX", "0.8").getDoubleValue();
         juce::AudioBuffer<float> mix(2, total);
         for (int c = 0; c < 2; ++c)
             for (int i = 0; i < total; ++i)
-                mix.setSample(c, i, out.getSample(c, i + lat) + 0.8f * pad.getSample(c, i));
+                mix.setSample(c, i, out.getSample(c, i + lat) + padMix * pad.getSample(c, i));
         mix.applyGain(0.89f / juce::jmax(1.0e-6f, mix.getMagnitude(0, total)));
         juce::WavAudioFormat wav;
         auto af = outDir.getChildFile("video_audio.wav"); af.deleteFile();
