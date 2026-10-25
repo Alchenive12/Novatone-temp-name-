@@ -9,6 +9,8 @@
 #include "PitchTraceQueue.h"
 #include "HarmonyEngineColours.h"
 
+namespace Poly { class ClipSession; }
+
 /**
     NovaTone Interactive 2D Piano Roll & Pitch/Time Note Graph Editor.
 
@@ -124,6 +126,13 @@ public:
 
     void selectAdjacentNote(int direction);
 
+    //==============================================================================
+    // Poly clip (Melodyne-style): in Poly mode the roll shows and edits the session's clip
+    void setClipSession(Poly::ClipSession* session);
+    bool isClipMode() const noexcept { return polyphonicModeEnabled && clipSession != nullptr; }
+    /** Fired when the clip's status changes (recording, analysing, ready...). */
+    std::function<void()> onClipStatusChanged;
+
     static juce::String midiNoteName(int midiNote);
 
     //==============================================================================
@@ -186,6 +195,11 @@ private:
     void notifySelectionChanged();
     void analyzeAudioBufferIntoNotes(const juce::AudioBuffer<float>& buffer, double sampleRate);
     void paintFreehandStrokeBetween(juce::Point<float> p0, juce::Point<float> p1, juce::Rectangle<float> grid);
+
+    void importClipFromSession();
+    void handleClipSessionChanged();
+    void pushNotesToClipSession();
+    int  playheadHopForPaint() const noexcept;
 
     static float hzToMidiNote(float hz) noexcept;
     static float midiNoteToHz(float midi) noexcept;
@@ -278,6 +292,12 @@ private:
     double lastPopTimeSeconds = 0.0;
     bool   hasLastPopTime     = false;
     bool   clearedPreviewOnFirstLiveVoice = false;
+
+    Poly::ClipSession* clipSession = nullptr;
+    const void* lastImportedAnalysis = nullptr;
+    int  clipHopSize  = 512;
+    int  clipPlayHop  = -1;
+    int  lastClipStatus = -1;
 
     juce::AudioBuffer<float> loadedAudioClip;
     double loadedAudioSampleRate = 48000.0;

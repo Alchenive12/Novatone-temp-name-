@@ -5,6 +5,7 @@
 #include "DSP/TuneEngine.h"
 #include "Poly/PolyAnalyzer.h"
 #include "Poly/PolyRenderer.h"
+#include "Poly/PolyClipSession.h"
 #include <random>
 #include <map>
 #include <set>
@@ -488,6 +489,81 @@ void runIdentity()
     std::cout << "  +0.01 dB gain edit: difference " << juce::String(10.0 * std::log10(std::max(1e-20, err / ref)), 1) << " dB below signal (ideal: below -20 dB)\n";
 }
 
+/** End-to-end session test: record via capture() at host positions, analyse, edit, play back with latency. */
+void runSession()
+{
+    std::cout << "\n=== Clip session (record -> analyse -> edit -> playback) ===\n";
+    auto audio = renderCase(chords("sess", Inst::Guitar, { { { 52, 55, 60 }, 3.0 } }));
+    Poly::ClipSession session;
+    session.prepare(sr, blockSize, 2);
+    session.startRecording();
+
+    const juce::int64 hostStart = 96000; // DAW playback starts 2 s into the timeline
+    juce::AudioBuffer<float> buf(2, blockSize);
+    for (int pos = 0; pos + blockSize <= (int) audio.size(); pos += blockSize)
+    {
+        for (int ch = 0; ch < 2; ++ch) buf.copyFrom(ch, 0, audio.data() + pos, blockSize);
+        session.capture(buf, hostStart + pos, true);
+    }
+    session.stopRecording();
+
+    auto waitFor = [&](std::function<bool()> cond, double secs)
+    {
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        while (! cond() && juce::Time::getMillisecondCounterHiRes() - t0 < secs * 1000.0)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        return cond();
+    };
+    const bool ready = waitFor([&] { return session.getStatus() == Poly::ClipSession::Status::ready && session.isRenderCurrent(); }, 30.0);
+    std::cout << "  analysed: " << (ready ? "yes" : "TIMED OUT") << " - " << session.getStatusText() << "\n";
+    if (! ready) return;
+
+    auto notes = session.getNotes();
+    int edited = 0;
+    for (auto& n : notes) if ((int) std::lround(n.detectedMidi) == 55) { n.targetMidi = 57; n.fineCents = 0; n.userEdited = true; ++edited; }
+    session.setNotes(notes);
+    const bool rendered = waitFor([&] { return session.isRenderCurrent(); }, 30.0);
+    std::cout << "  edited " << edited << " note(s) G3 -> A3, re-rendered: " << (rendered ? "yes" : "TIMED OUT") << "\n";
+
+    // Play back through a host with 1000 samples of plugin latency
+    const int latency = 1000;
+    std::vector<float> out(audio.size() + 4 * blockSize, 0.0f);
+    for (int pos = 0; pos + blockSize <= (int) out.size(); pos += blockSize)
+    {
+        buf.clear();
+        session.playback(buf, hostStart + pos + latency, true, latency);
+        std::copy(buf.getReadPointer(0), buf.getReadPointer(0) + blockSize, out.begin() + pos);
+    }
+    // Output at host position P is heard at P - latency, so out[i] should be clip sample i.
+    auto db = [](double r) { return 10.0 * std::log10(std::max(1e-12, r)); };
+    auto eAt = [&](const std::vector<float>& x, double hz) { return bandEnergy(x, (int) (1.2 * sr), (int) sr, hz); };
+    std::cout << "  playback: G3 left " << juce::String(db(eAt(out, midiToHz(55)) / eAt(audio, midiToHz(55))), 1)
+              << " dB, A3 now " << juce::String(db(eAt(out, midiToHz(57)) / eAt(audio, midiToHz(55))), 1) << " dB rel. old G3\n";
+
+    // Alignment: correlate an unedited region (first 30 ms, before edits take effect) is fragile; use E3 partial phase instead
+    double num = 0, den = 0;
+    for (int i = (int) (0.5 * sr); i < (int) (2.5 * sr); ++i) { num += (double) out[(size_t) i] * audio[(size_t) i]; den += (double) audio[(size_t) i] * audio[(size_t) i]; }
+    double bestC = -1; int bestLag = 0;
+    for (int lag = -64; lag <= 64; ++lag)
+    {
+        double c = 0;
+        for (int i = (int) (0.5 * sr); i < (int) (2.5 * sr); i += 4) c += (double) out[(size_t) (i + lag)] * audio[(size_t) i];
+        if (c > bestC) { bestC = c; bestLag = lag; }
+    }
+    std::cout << "  timeline alignment: best lag " << bestLag << " samples (ideal 0)\n";
+
+    // State round trip
+    auto tree = session.toValueTree();
+    Poly::ClipSession restored;
+    restored.prepare(sr, blockSize, 2);
+    restored.fromValueTree(tree);
+    const bool rr = waitFor([&] { return restored.isRenderCurrent(); }, 30.0);
+    int restoredEdited = 0;
+    for (auto& n : restored.getNotes()) if (n.targetMidi == 57 && (int) std::lround(n.detectedMidi) == 55) ++restoredEdited;
+    std::cout << "  state round trip: " << (rr ? "restored" : "FAILED") << ", " << restoredEdited << " edited note(s) kept, file "
+              << tree.getProperty("file").toString() << "\n";
+}
+
 int main(int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI init;
@@ -536,6 +612,8 @@ int main(int argc, char** argv)
         runClipEdit(Inst::Guitar,  { 45, 52, 57, 60, 64 }, 60, 61);
         runClipEdit(Inst::Strings, { 48, 55, 64 }, 55, 53);
     }
+    if (mode == "session" || mode == "all")
+        runSession();
     if (mode == "listen")
     {
         // Listening examples: original / old engine / new engine / ideal

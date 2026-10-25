@@ -395,6 +395,7 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
     addAndMakeVisible(workstationView);
     addAndMakeVisible(masterBar);
     masterBar.setCentreComponent(&workstationView.getTunerComponent());
+    workstationView.setClipSession(&p.getPolyClip());
 
     setResizable(true, true);
     setResizeLimits(920, 700, 1920, 1200);

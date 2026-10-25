@@ -14,6 +14,7 @@
 #include "DSP/AlterEngine.h"
 #include "DSP/ModuleBypass.h"
 #include "PresetManager.h"
+#include "Poly/PolyClipSession.h"
 
 /**
     Standalone "NovaTone" Vocal Pitch, Time & Formant AudioProcessor.
@@ -73,6 +74,9 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
     PresetManager& getPresetManager() noexcept { return presetManager; }
+
+    /** Melodyne-style polyphonic clip (record/load, analyse, edit, playback). */
+    Poly::ClipSession& getPolyClip() noexcept { return polyClip; }
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -155,6 +159,7 @@ private:
     int lastPublishedHopIndex = 0;
 
     PresetManager presetManager;
+    Poly::ClipSession polyClip;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NovaToneAudioProcessor)
 };

@@ -512,7 +512,7 @@ Analysis analyse (const float* mono, int numSamples, double sampleRate, const An
 {
     Analysis result;
     result.sampleRate = sampleRate;
-    result.hopSize = juce::roundToInt (sampleRate * 0.01);
+    result.hopSize = juce::roundToInt (sampleRate * 512.0 / 48000.0); // = the live engine's hop (10.67 ms)
     result.numFrames = numSamples / result.hopSize + 1;
     if (numSamples <= 0) return result;
 

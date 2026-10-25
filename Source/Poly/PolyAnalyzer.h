@@ -9,7 +9,7 @@
     Offline polyphonic analysis of a whole audio clip (Melodyne-style "clip" model).
 
     Pipeline:
-      1. STFT (85 ms Hann window, 10 ms hop, 4x zero padding) -> interpolated spectral peaks.
+      1. STFT (85 ms Hann window, 10.67 ms hop, 4x zero padding) -> interpolated spectral peaks.
       2. Spectral whitening of the peak amplitudes so quiet upper voices can compete with
          a loud bass.
       3. Per frame, iterative multi-F0 estimation by harmonic-amplitude summation
@@ -38,7 +38,7 @@ namespace Poly
     struct Analysis
     {
         double sampleRate = 48000.0;
-        int    hopSize    = 480;     ///< samples between frames; frame i is centred on sample i * hopSize
+        int    hopSize    = 512;     ///< samples between frames (10.67 ms); frame i is centred on sample i * hopSize
         int    numFrames  = 0;
         std::vector<Note> notes;
 

@@ -1,4 +1,5 @@
 #include "PitchTraceComponent.h"
+#include "../Poly/PolyClipSession.h"
 #include "ModuleTabs.h"
 #if __has_include("../DSP/MPMDetector.h")
  #include "../DSP/MPMDetector.h"
@@ -33,6 +34,157 @@ PitchTraceComponent::PitchTraceComponent(PitchTraceQueue& queueToDrain)
 PitchTraceComponent::~PitchTraceComponent()
 {
     stopTimer();
+    if (clipSession != nullptr)
+        clipSession->onClipChanged = nullptr;
+}
+
+//==============================================================================
+// Poly clip integration
+//==============================================================================
+void PitchTraceComponent::setClipSession(Poly::ClipSession* session)
+{
+    clipSession = session;
+    if (clipSession == nullptr) return;
+    juce::Component::SafePointer<PitchTraceComponent> safe(this);
+    clipSession->onClipChanged = [safe] { if (safe != nullptr) safe->handleClipSessionChanged(); };
+    if (polyphonicModeEnabled)
+        importClipFromSession();
+}
+
+void PitchTraceComponent::handleClipSessionChanged()
+{
+    if (clipSession == nullptr) return;
+    const int st = static_cast<int>(clipSession->getStatus());
+    const bool statusChanged = st != lastClipStatus;
+    lastClipStatus = st;
+
+    if (isClipMode())
+    {
+        // Re-import only when there's a new analysis (our own edits also trigger renders)
+        if (clipSession->getAnalysis().get() != lastImportedAnalysis || (statusChanged && clipSession->getAnalysis() == nullptr))
+            importClipFromSession();
+        currentCoachHint = clipSession->getStatusText();
+        repaint();
+    }
+    if (statusChanged && onClipStatusChanged)
+        onClipStatusChanged();
+}
+
+void PitchTraceComponent::importClipFromSession()
+{
+    if (clipSession == nullptr) return;
+    const auto an = clipSession->getAnalysis();
+    lastImportedAnalysis = an.get();
+
+    timeline.clear();
+    notes.clear();
+    undoStack.clear();
+    redoStack.clear();
+    selectedNoteId = hoveredNoteId = advancedEditNoteId = -1;
+    clipPlayHop = -1;
+    currentCoachHint = clipSession->getStatusText();
+
+    if (an == nullptr)
+    {
+        notifySelectionChanged();
+        repaint();
+        return;
+    }
+
+    clipHopSize = an->hopSize;
+    const auto clipNotes = clipSession->getNotes();
+    timeline.resize((size_t) an->numFrames);
+    for (int f = 0; f < an->numFrames; ++f)
+    {
+        auto& th = timeline[(size_t) f];
+        th.data.hopIndex = f;
+        th.data.isPolyphonic = true;
+        th.timeStampSeconds = an->frameToSeconds(f);
+        th.polyNoteIds.fill(-1);
+    }
+
+    float lo = 127.0f, hi = 0.0f;
+    for (const auto& cn : clipNotes)
+    {
+        const Poly::Note* src = nullptr;
+        for (const auto& n : an->notes) if (n.id == cn.sourceId) { src = &n; break; }
+        const int lane = juce::jlimit(0, PitchTraceQueue::maxPolyVoices - 1, cn.lane);
+        for (int f = juce::jmax(0, cn.startFrame); f < juce::jmin(an->numFrames, cn.endFrame); ++f)
+        {
+            auto& d = timeline[(size_t) f].data;
+            const int si = src != nullptr ? f - src->startFrame : -1;
+            const bool inSrc = src != nullptr && si >= 0 && si < (int) src->pitchMidi.size();
+            d.polyRawMidi[(size_t) lane] = inSrc ? src->pitchMidi[(size_t) si] : cn.detectedMidi;
+            d.polyVoiceRms[(size_t) lane] = inSrc ? src->amp[(size_t) si] : 0.0f;
+            d.numPolyVoices = (uint8_t) juce::jmax((int) d.numPolyVoices, lane + 1);
+            d.isVoiced = true;
+            d.rms += 1.5f * d.polyVoiceRms[(size_t) lane];
+            timeline[(size_t) f].rawMidi = juce::jmax(timeline[(size_t) f].rawMidi, d.polyRawMidi[(size_t) lane]);
+        }
+
+        NewtoneNoteBlock nb;
+        nb.id = cn.id;
+        nb.sourceId = cn.sourceId;
+        nb.voiceLane = lane;
+        nb.startHop = cn.startFrame;
+        nb.endHop = cn.endFrame;
+        nb.detectedMidi = cn.detectedMidi;
+        nb.nearestMidi = (int) std::lround(cn.detectedMidi);
+        nb.targetMidi = cn.targetMidi;
+        nb.fineCents = cn.fineCents;
+        nb.gainDb = cn.gainDb;
+        nb.formantSemitones = cn.formantSemitones;
+        nb.userEdited = cn.userEdited;
+        nb.meanRms = src != nullptr ? src->level : 0.02f;
+        notes.push_back(nb);
+        nextNoteId = juce::jmax(nextNoteId, cn.id + 1);
+        lo = juce::jmin(lo, cn.detectedMidi);
+        hi = juce::jmax(hi, cn.detectedMidi);
+    }
+    relinkTimelineToNotes();
+
+    viewStartHop = 0.0f;
+    visibleHopsCount = juce::jlimit(180.0f, 1400.0f, (float) an->numFrames + 12.0f);
+    if (hi >= lo)
+    {
+        viewCentreMidiNote = 0.5f * (lo + hi);
+        viewHalfRangeSemitones = juce::jlimit(8.0f, 30.0f, 0.5f * (hi - lo) + 3.0f);
+    }
+    notifySelectionChanged();
+    repaint();
+}
+
+void PitchTraceComponent::pushNotesToClipSession()
+{
+    if (clipSession == nullptr) return;
+    std::vector<Poly::ClipNote> out;
+    out.reserve(notes.size());
+    for (const auto& n : notes)
+    {
+        if (n.isSibilant) continue;
+        Poly::ClipNote c;
+        c.id = n.id;
+        c.sourceId = n.sourceId >= 0 ? n.sourceId : n.id;
+        c.lane = n.voiceLane;
+        c.startFrame = n.startHop;
+        c.endFrame = n.endHop;
+        c.detectedMidi = n.detectedMidi;
+        c.targetMidi = n.targetMidi;
+        c.fineCents = n.fineCents;
+        c.gainDb = n.gainDb;
+        c.formantSemitones = n.formantSemitones;
+        c.userEdited = n.userEdited;
+        out.push_back(c);
+    }
+    clipSession->setNotes(out);
+}
+
+int PitchTraceComponent::playheadHopForPaint() const noexcept
+{
+    if (isClipMode())
+        return clipPlayHop;
+    const int scrubbedHop = queue.currentPlayheadHop.load(std::memory_order_relaxed);
+    return (scrubbedHop > 0 && scrubbedHop < static_cast<int>(timeline.size())) ? scrubbedHop : (static_cast<int>(timeline.size()) - 1);
 }
 
 void PitchTraceComponent::setFrequencyRange(float minHz, float maxHz) noexcept
@@ -457,6 +609,22 @@ void PitchTraceComponent::setPolyphonicMode(bool polyEnabled)
     polyphonicModeEnabled = polyEnabled;
     queue.globalPolyphonic.store(polyEnabled, std::memory_order_relaxed);
 
+    if (clipSession != nullptr)
+    {
+        if (polyphonicModeEnabled)
+        {
+            importClipFromSession();
+            if (onClipStatusChanged) onClipStatusChanged();
+            repaint();
+            return;
+        }
+        // Back to mono: the clip stays in the session; the roll returns to live tuning.
+        timeline.clear();
+        notes.clear();
+        lastImportedAnalysis = nullptr;
+        if (onClipStatusChanged) onClipStatusChanged();
+    }
+
     if (!clearedPreviewOnFirstLiveVoice)
     {
         if (polyphonicModeEnabled)
@@ -539,6 +707,12 @@ void PitchTraceComponent::resetAllNotes()
 
 void PitchTraceComponent::clearTimeline()
 {
+    if (isClipMode())
+    {
+        clipSession->clear();
+        return;
+    }
+
     pushUndoSnapshot();
     timeline.clear();
     notes.clear();
@@ -964,6 +1138,9 @@ void PitchTraceComponent::loadPolyphonicChordPreview()
 //==============================================================================
 void PitchTraceComponent::rebuildSegmentationFromSensitivity()
 {
+    if (isClipMode())
+        return; // clip notes come from the clip analysis, not from live segmentation
+
     if (timeline.empty())
     {
         notes.clear();
@@ -1505,6 +1682,12 @@ void PitchTraceComponent::appendHopToTimeline(const PitchTraceQueue::PitchData& 
 
 void PitchTraceComponent::syncActiveOverrideToEngine()
 {
+    if (isClipMode())
+    {
+        pushNotesToClipSession();
+        return;
+    }
+
     auto& ov = queue.getLiveOverride();
     const NewtoneNoteBlock* active = findNoteById(selectedNoteId);
     if (active == nullptr && !notes.empty())
@@ -1621,6 +1804,28 @@ void PitchTraceComponent::timerCallback()
     queue.popAll(popScratch);
 
     bool needsRepaint = false;
+
+    if (isClipMode())
+    {
+        popScratch.clear(); // live hops don't belong on the clip's timeline
+        const auto pos = clipSession->getPlayPosition();
+        const int hop = pos >= 0 ? static_cast<int>(pos / juce::jmax(1, clipHopSize)) : (clipSession->isPreviewPlaying() ? clipPlayHop : clipPlayHop);
+        if (pos >= 0 && hop != clipPlayHop)
+        {
+            clipPlayHop = hop;
+            if (autoScrollEnabled && (static_cast<float>(hop) > viewStartHop + visibleHopsCount * 0.88f || static_cast<float>(hop) < viewStartHop))
+                viewStartHop = juce::jmax(0.0f, static_cast<float>(hop) - visibleHopsCount * 0.12f);
+            needsRepaint = true;
+        }
+        const auto st = clipSession->getStatus();
+        if (st == Poly::ClipSession::Status::recording || st == Poly::ClipSession::Status::analysing)
+        {
+            const auto text = clipSession->getStatusText();
+            if (text != currentCoachHint) { currentCoachHint = text; needsRepaint = true; }
+        }
+        if (needsRepaint) repaint();
+        return;
+    }
 
     if (!popScratch.empty())
     {
@@ -1899,6 +2104,9 @@ float PitchTraceComponent::evaluatePolyShapedMidiAtHop(int hopIdx, int voiceLane
     if (nb == nullptr || nb->isSibilant)
         return rawM;
 
+    if (isClipMode()) // the clip renderer moves the note by exactly this amount
+        return rawM + (nb->effectiveTargetMidi() - nb->detectedMidi);
+
     const float humSlider  = queue.globalHumanizeAmount.load(std::memory_order_relaxed);
     const float hDrive     = (humSlider > 0.001f)
         ? juce::jlimit(0.0f, 2.0f, humSlider * 2.0f)
@@ -2085,8 +2293,7 @@ void PitchTraceComponent::paintTimeRuler(juce::Graphics& g, juce::Rectangle<floa
     }
 
     // Playhead marker
-    const int scrubbedHop = queue.currentPlayheadHop.load(std::memory_order_relaxed);
-    const int activePlayHop = (scrubbedHop > 0 && scrubbedHop < static_cast<int>(timeline.size())) ? scrubbedHop : (static_cast<int>(timeline.size()) - 1);
+    const int activePlayHop = playheadHopForPaint();
     if (activePlayHop > 0)
     {
         const float px = hopToX(static_cast<float>(activePlayHop), grid);
@@ -2417,10 +2624,9 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
         g.setColour(pitchTraceHeroGold);
         g.strokePath(correctedPath, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
-        const int scrubbedHop = queue.currentPlayheadHop.load(std::memory_order_relaxed);
-        const int activePlayHop = (scrubbedHop > 0 && scrubbedHop < static_cast<int>(timeline.size())) ? scrubbedHop : (static_cast<int>(timeline.size()) - 1);
+        const int activePlayHop = playheadHopForPaint();
         const float playheadX = hopToX(static_cast<float>(activePlayHop), grid);
-        if (playheadX >= grid.getX() && playheadX <= grid.getRight())
+        if (activePlayHop >= 0 && playheadX >= grid.getX() && playheadX <= grid.getRight())
         {
             g.setColour(cyanBright.withAlpha(0.7f));
             g.drawVerticalLine(juce::roundToInt(playheadX), grid.getY(), grid.getBottom());
@@ -2744,6 +2950,11 @@ void PitchTraceComponent::mouseDown(const juce::MouseEvent& e)
         const int scrubH = juce::jlimit(0, juce::jmax(0, static_cast<int>(timeline.size()) - 1),
                                         static_cast<int>(std::lround(xToHop(pt.x, grid))));
         queue.currentPlayheadHop.store(scrubH, std::memory_order_relaxed);
+        if (isClipMode())
+        {
+            clipPlayHop = scrubH;
+            clipSession->seekPreview(static_cast<juce::int64>(scrubH) * clipHopSize);
+        }
         if (scrubH < static_cast<int>(timeline.size()) && timeline[(size_t)scrubH].noteId > 0)
         {
             selectedNoteId = timeline[(size_t)scrubH].noteId;
@@ -2962,6 +3173,11 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
         const int scrubH = juce::jlimit(0, juce::jmax(0, static_cast<int>(timeline.size()) - 1),
                                         static_cast<int>(std::lround(xToHop(pt.x, grid))));
         queue.currentPlayheadHop.store(scrubH, std::memory_order_relaxed);
+        if (isClipMode())
+        {
+            clipPlayHop = scrubH;
+            clipSession->seekPreview(static_cast<juce::int64>(scrubH) * clipHopSize);
+        }
         if (scrubH < static_cast<int>(timeline.size()) && timeline[(size_t)scrubH].noteId > 0)
         {
             selectedNoteId = timeline[(size_t)scrubH].noteId;
@@ -3235,6 +3451,14 @@ void PitchTraceComponent::filesDropped(const juce::StringArray& files, int, int)
     if (droppedFile.hasFileExtension(".mid;midi"))
     {
         loadMidiReferenceFile(droppedFile);
+        return;
+    }
+
+    if (isClipMode())
+    {
+        currentCoachHint = clipSession->loadFile(droppedFile) ? clipSession->getStatusText()
+                                                             : juce::String("Couldn't read that audio file.");
+        repaint();
         return;
     }
 
@@ -3706,6 +3930,25 @@ void PitchTraceComponent::loadMidiReferenceFile(const juce::File& midiFile)
 
 void PitchTraceComponent::promptExportWavFile()
 {
+    if (isClipMode())
+    {
+        activeFileChooser = std::make_unique<juce::FileChooser>(
+            "Export edited clip (.wav)",
+            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("NovaTone Poly Clip.wav"), "*.wav");
+        juce::Component::SafePointer<PitchTraceComponent> safeThis(this);
+        activeFileChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+            [safeThis](const juce::FileChooser& fc)
+            {
+                if (safeThis == nullptr || safeThis->clipSession == nullptr) return;
+                const auto f = fc.getResult();
+                if (f == juce::File()) return;
+                safeThis->currentCoachHint = safeThis->clipSession->exportRender(f.withFileExtension("wav"))
+                    ? "Exported " + f.withFileExtension("wav").getFileName() : juce::String("Export failed.");
+                safeThis->repaint();
+            });
+        return;
+    }
+
     activeFileChooser = std::make_unique<juce::FileChooser>(
         "Bounce & Export Tuned Vocal Audio (.wav)",
         juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("NovaToneTunedVocal.wav"),

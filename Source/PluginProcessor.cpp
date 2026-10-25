@@ -313,6 +313,7 @@ void NovaToneAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
 
     tuneEngine.setLookaheadEnabled(lookaheadRequested());
     tuneEngine.prepare(spec);
+    polyClip.prepare(sampleRate, samplesPerBlock, (int)spec.numChannels);
     alterEngine.prepare(spec);
     lastPublishedHopIndex = 0;
 
@@ -368,7 +369,8 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
     const bool  midiCleanBtn = load(tuneMidiCleanParam,  0.0f) > 0.5f;
     tuneEngine.setHumanizeAmount(humanizeAmt);
     tuneEngine.setHumanizeEnabled(humanizeBtn);
-    tuneEngine.setPolyphonicEnabled(polyBtn);
+    // Poly mode is clip-based now (Poly::ClipSession); the old real-time poly path stays off.
+    tuneEngine.setPolyphonicEnabled(false);
     tuneEngine.setMidiCleanModeEnabled(midiCleanBtn);
     pitchQueue.globalHumanizeAmount.store(humanizeAmt, std::memory_order_relaxed);
     pitchQueue.globalHumanize.store(humanizeBtn,       std::memory_order_relaxed);
@@ -532,8 +534,22 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     inputGain.process(context);
     publishPeaks(block, inputPeak);
 
+    // Host transport (sample position + playing state) for the poly clip
+    std::optional<juce::int64> hostSample;
+    bool hostPlaying = false;
+    if (auto* ph = getPlayHead())
+        if (const auto pos = ph->getPosition())
+        {
+            hostPlaying = pos->getIsPlaying();
+            if (pos->getTimeInSamples().hasValue()) hostSample = *pos->getTimeInSamples();
+        }
+    const bool polyMode = tunePolyphonicParam != nullptr && tunePolyphonicParam->load(std::memory_order_relaxed) > 0.5f;
+    if (polyMode)
+        polyClip.capture(buffer, hostSample, hostPlaying);
+
     using Context = juce::dsp::ProcessContextReplacing<float>;
-    const bool tuneBypassed = tuneBypassParam != nullptr && tuneBypassParam->load(std::memory_order_relaxed) > 0.5f;
+    // In poly mode the live (mono) tuner is bypassed; edits come from the rendered clip.
+    const bool tuneBypassed = polyMode || (tuneBypassParam != nullptr && tuneBypassParam->load(std::memory_order_relaxed) > 0.5f);
 
     const float globalForm = alterFormantParam != nullptr ? alterFormantParam->load(std::memory_order_relaxed) : 0.0f;
     float noteForm = 0.0f;
@@ -553,6 +569,10 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
         [this](const Context& c) { tuneEngine.process(c); }, [this] { tuneEngine.reset(); });
     bypass[alterModule].process(context, tuneBypassed || !alterNeeded,
         [this](const Context& c) { alterEngine.process(c); }, [this] { alterEngine.reset(); });
+
+    // Inside the clip's range the rendered clip replaces the (latency-matched) dry signal.
+    if (polyMode)
+        polyClip.playback(buffer, hostSample, hostPlaying, getLatencySamples());
 
     outputGain.process(context);
     publishPeaks(block, outputPeak);
@@ -636,7 +656,10 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 
 void NovaToneAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-    const auto state = apvts.copyState();
+    auto state = apvts.copyState();
+    state.removeChild(state.getChildWithName("PolyClip"), nullptr);
+    if (auto clipTree = polyClip.toValueTree(); clipTree.isValid() && clipTree.hasProperty("file"))
+        state.appendChild(clipTree, nullptr);
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     if (xml != nullptr) copyXmlToBinary(*xml, destData);
 }
@@ -645,7 +668,16 @@ void NovaToneAudioProcessor::setStateInformation(const void* data, int sizeInByt
 {
     std::unique_ptr<juce::XmlElement> xml(getXmlFromBinary(data, sizeInBytes));
     if (xml != nullptr && xml->hasTagName(apvts.state.getType()))
-        applyStateGuarded(juce::ValueTree::fromXml(*xml));
+    {
+        auto tree = juce::ValueTree::fromXml(*xml);
+        const auto clipTree = tree.getChildWithName("PolyClip").createCopy();
+        tree.removeChild(tree.getChildWithName("PolyClip"), nullptr);
+        applyStateGuarded(tree);
+        if (clipTree.isValid())
+            polyClip.fromValueTree(clipTree);
+        else
+            polyClip.clear();
+    }
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::createParameterLayout()

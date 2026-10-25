@@ -17,6 +17,7 @@
 struct NewtoneNoteBlock
 {
     int   id               = 0;      ///< Unique note identifier.
+    int   sourceId         = -1;     ///< Poly clip: analysed note this block (or split piece) came from.
     int   voiceLane        = 0;      ///< 0 in Mono mode; 0..15 in Polyphonic Melodyne mode.
     int   startHop         = 0;      ///< Inclusive start hop index on the timeline.
     int   endHop           = 1;      ///< Exclusive end hop index on the timeline.

@@ -72,7 +72,10 @@ target_sources(NovaTone PRIVATE
     Source/DSP/VoicingGate.cpp
     Source/GUI/ModuleTabs.cpp
     Source/GUI/PitchTraceComponent.cpp
-    Source/GUI/TuneTab.cpp)
+    Source/GUI/TuneTab.cpp
+    Source/Poly/PolyAnalyzer.cpp
+    Source/Poly/PolyRenderer.cpp
+    Source/Poly/PolyClipSession.cpp)
 
 target_include_directories(NovaTone PRIVATE
     Source
@@ -123,11 +126,11 @@ option(NOVATONE_BUILD_TOOLS "Build dev benchmarks (NovaTonePolyBench)" OFF)
 if (NOVATONE_BUILD_TOOLS)
     juce_add_console_app(NovaTonePolyBench PRODUCT_NAME "NovaTonePolyBench" VERSION ${PROJECT_VERSION})
     juce_generate_juce_header(NovaTonePolyBench)
-    target_sources(NovaTonePolyBench PRIVATE tools/PolyBench.cpp Source/Poly/PolyAnalyzer.cpp Source/Poly/PolyRenderer.cpp
+    target_sources(NovaTonePolyBench PRIVATE tools/PolyBench.cpp Source/Poly/PolyAnalyzer.cpp Source/Poly/PolyRenderer.cpp Source/Poly/PolyClipSession.cpp
         Source/DSP/LookaheadBuffer.cpp Source/DSP/MPMDetector.cpp Source/DSP/Quantizer.cpp
         Source/DSP/SmoothingFilter.cpp Source/DSP/VoicingGate.cpp)
     target_include_directories(NovaTonePolyBench PRIVATE Source Source/DSP Source/GUI ${SIGNALSMITH_SRC})
-    target_compile_definitions(NovaTonePolyBench PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_compile_definitions(NovaTonePolyBench PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_link_libraries(NovaTonePolyBench PRIVATE juce::juce_dsp juce::juce_audio_basics juce::juce_audio_formats juce::juce_gui_basics
         juce::juce_recommended_config_flags)
 endif()
