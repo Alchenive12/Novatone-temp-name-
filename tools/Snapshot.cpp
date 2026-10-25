@@ -284,6 +284,13 @@ int main(int argc, char** argv)
         setP("harm_v1_on", 1.0f); setP("harm_v2_on", nVoices > 1 ? 1.0f : 0.0f);
         setP("harm_v1_level", -5.0f); setP("harm_v2_level", -6.0f);
         setP("harm_humanize", 0.35f);
+        if (juce::SystemStats::getEnvironmentVariable("VIDEO_EXTRA", "0") == "1")
+        {   // the + button's extra voices: Maj7 colour and Random (in key)
+            setP("harm_voices", 6.0f);
+            setP("harm_v5_on", 1.0f); setP("harm_v5_mode", (float) HarmonyEngine::maj7Colour); setP("harm_v5_level", -9.0f);
+            setP("harm_v6_on", 1.0f); setP("harm_v6_mode", (float) HarmonyEngine::randomInKey); setP("harm_v6_level", -10.0f);
+            setP("tune_root", 2.0f); setP("tune_mode", 1.0f); // D minor for the random voice
+        }
         setP("harm_source", 0.0f);
 
         std::unique_ptr<juce::AudioProcessorEditor> ved(proc->createEditor());
@@ -297,6 +304,16 @@ int main(int argc, char** argv)
         };
         toHarmony(*ved);
         pump(200);
+        if (juce::SystemStats::getEnvironmentVariable("VIDEO_EXTRA", "0") == "1")
+        {
+            std::function<void(juce::Component&)> scrollEnd = [&](juce::Component& c)
+            {
+                for (auto* ch : c.getChildren())
+                    if (auto* vp = dynamic_cast<juce::Viewport*>(ch)) { if (auto* vc = vp->getViewedComponent()) vp->setViewPosition(vc->getWidth() - vp->getWidth(), 0); }
+                    else scrollEnd(*ch);
+            };
+            pump(100); scrollEnd(*ved); pump(100);
+        }
 
         const bool testExport = juce::SystemStats::getEnvironmentVariable("VIDEO_EXPORT", "0") == "1";
         if (testExport) { setP("harm_lead", -60.0f); np->getHarmonyExporter().arm(); }

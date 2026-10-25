@@ -24,13 +24,16 @@
 class HarmonyEngine
 {
 public:
-    static constexpr int numVoices = 4;
+    static constexpr int numVoices = 8;  ///< 4 shown by default, more via the + button
 
-    enum Mode { chordAbove = 0, chordAbove2, chordBelow, chordBelow2, octaveUp, octaveDown, chordRoot, unison, numModes };
+    // New modes are appended so saved sessions keep their choices.
+    enum Mode { chordAbove = 0, chordAbove2, chordBelow, chordBelow2, octaveUp, octaveDown, chordRoot, unison,
+                maj7Colour, maj9Colour, sus2Voice, sus4Voice, randomInKey, numModes };
     static juce::StringArray modeNames()
     {
         return { "Chord tone above", "2 chord tones above", "Chord tone below", "2 chord tones below",
-                 "Octave above", "Octave below", "Chord root (below)", "Unison double" };
+                 "Octave above", "Octave below", "Chord root (below)", "Unison double",
+                 "Maj7 colour", "Maj9 colour", "Sus2", "Sus4", "Random (in key)" };
     }
 
     struct VoiceSettings
@@ -70,9 +73,9 @@ public:
         monoIn.assign ((size_t) maxBlockSize, 0.0f);
         chords.prepare (sampleRate);
 
-        std::mt19937 rng (7);
+        std::mt19937 seedRng (7);
         std::uniform_real_distribution<float> u (0.0f, 1.0f);
-        for (auto& v : voices) { v.humanSeed = u (rng); v.driftPhase = u (rng) * 6.28f; }
+        for (auto& v : voices) { v.humanSeed = u (seedRng); v.driftPhase = u (seedRng) * 6.28f; }
         reset();
     }
 
@@ -101,6 +104,7 @@ public:
     void setLeadGainDb (float db) noexcept { leadGain = db <= -59.0f ? 0.0f : juce::Decibels::decibelsToGain (db); }
     void setUseSidechainChords (bool b) noexcept { useSidechain = b; }
     void setScaleMask (uint16_t m) noexcept { scaleMask = m == 0 ? 0x0FFF : m; }
+    void setKeyRoot (int pc) noexcept { keyRoot = ((pc % 12) + 12) % 12; }
     void setTotalLatency (int samples) noexcept { totalLatency = samples; }
 
     bool anyVoiceOn() const noexcept
@@ -235,6 +239,7 @@ private:
         float shift = 0.0f, shiftTarget = 0.0f;
         float humanSeed = 0.5f, driftPhase = 0.0f;
         int targetNote = -1;
+        int randomFor = -1000, randomTarget = 0; ///< Random mode: note picked for this lead note
         bool active = false;
         std::atomic<int> publishedNote { -1 };
     };
@@ -273,10 +278,44 @@ private:
         return n;
     }
 
+    /** Root of the current chord (sidechain) or key, and whether it's a minor-type chord. */
+    void currentRootQuality (uint16_t tones, int& root, bool& minorish) const noexcept
+    {
+        const int c = useSidechain ? chords.getChord() : -1;
+        if (c >= 0)
+        {
+            root = c / ChordTracker::numQualities;
+            const int q = c % ChordTracker::numQualities;
+            minorish = q == ChordTracker::minor || q == ChordTracker::min7 || q == ChordTracker::dim || q == ChordTracker::dom7;
+            return;
+        }
+        root = keyRoot;
+        minorish = ((tones >> ((root + 3) % 12)) & 1u) && ! ((tones >> ((root + 4) % 12)) & 1u);
+    }
+
+    /** Nearest note strictly above `note` with pitch class `pc`. */
+    static int pcAbove (int note, int pc) noexcept
+    {
+        int t = note + 1;
+        while (((t % 12) + 12) % 12 != ((pc % 12) + 12) % 12) ++t;
+        return t;
+    }
+
     int targetFor (int mode, int leadNote, uint16_t tones) const noexcept
     {
         switch (mode)
         {
+            case maj7Colour:
+            case maj9Colour:
+            case sus2Voice:
+            case sus4Voice:
+            {
+                int root = 0; bool minorish = false;
+                currentRootQuality (tones, root, minorish);
+                if (mode == maj7Colour) return pcAbove (leadNote, root + (minorish ? 10 : 11)); // maj7, or b7 over minor chords
+                if (mode == maj9Colour) return pcAbove (leadNote + 2, root + 2);  // the 9th, kept at least a 3rd above
+                return toneAbove (leadNote, ChordTracker::chordMask (root, mode == sus2Voice ? ChordTracker::sus2 : ChordTracker::sus4), 1);
+            }
             case chordAbove:  return toneAbove (leadNote, tones, 1);
             case chordAbove2: return toneAbove (leadNote, tones, 2);
             case chordBelow:  return toneBelow (leadNote, tones, 1);
@@ -318,7 +357,23 @@ private:
         for (auto& v : voices)
         {
             if (! v.settings.on) { v.publishedNote.store (-1); continue; }
-            const int t = targetFor (v.settings.mode, leadNote, tones);
+            int t;
+            if (v.settings.mode == randomInKey)
+            {
+                // a new random in-key note (a 3rd .. a 6th away, up or down) for every new lead note
+                if (leadNote != v.randomFor)
+                {
+                    v.randomFor = leadNote;
+                    int cand[24]; int nc = 0;
+                    for (int d = -9; d <= 9; ++d)
+                        if (std::abs (d) >= 3 && ((scaleMask >> (((leadNote + d) % 12 + 12) % 12)) & 1u)) cand[nc++] = leadNote + d;
+                    rng = rng * 1664525u + 1013904223u;
+                    v.randomTarget = nc > 0 ? cand[(rng >> 8) % (juce::uint32) nc] : leadNote + 12;
+                }
+                t = v.randomTarget;
+            }
+            else
+                t = targetFor (v.settings.mode, leadNote, tones);
             v.targetNote = t;
             v.shiftTarget = (float) t - leadSlow;
             v.publishedNote.store (t, std::memory_order_relaxed);
@@ -343,4 +398,6 @@ private:
     float humanize = 0.4f, harmonyGain = 1.0f, leadGain = 1.0f;
     bool useSidechain = true;
     uint16_t scaleMask = 0x0AB5;
+    int keyRoot = 0;
+    juce::uint32 rng = 0x2545F491u;
 };

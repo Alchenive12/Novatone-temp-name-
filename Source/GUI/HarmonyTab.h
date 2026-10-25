@@ -41,6 +41,7 @@ private:
         int index;
         int currentNote = -1;
         juce::ToggleButton power;
+        juce::TextButton removeButton { juce::CharPointer_UTF8 ("\xc3\x97") }; ///< shown on the last added voice
         juce::AudioProcessorValueTreeState::ButtonAttachment powerAttachment;
         ChoiceSelector mode;
         RotaryKnob level, pan, formant;
@@ -76,6 +77,28 @@ private:
     std::function<bool()> sidechainConnected;
 
     std::array<std::unique_ptr<VoiceCard>, HarmonyEngine::numVoices> voiceCards;
+
+    /** "+" card at the end of the voice row: adds a voice slot with a chosen harmony type. */
+    struct AddVoiceCard : public juce::Component, public juce::SettableTooltipClient
+    {
+        std::function<void()> onClick;
+        bool enabled = true;
+        void paint (juce::Graphics&) override;
+        void mouseUp (const juce::MouseEvent& e) override { if (enabled && e.mouseWasClicked() && onClick) onClick(); }
+        void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+        void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    };
+    AddVoiceCard addVoiceCard;
+    juce::Component voiceStrip;
+    juce::Viewport voiceViewport;
+    juce::Rectangle<int> voiceArea;
+    int shownVoices = 4;
+    int visibleVoiceCount() const;
+    void layoutVoices();
+    void showAddVoiceMenu();
+    void addVoice (int mode);
+    void removeLastVoice();
+    void setParam (const juce::String& id, float plainValue);
     RotaryKnob mixKnob, leadKnob, humanizeKnob;
     ChoiceSelector sourceSelector;
 

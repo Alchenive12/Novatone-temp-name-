@@ -23,7 +23,7 @@ namespace
     const juce::Colour voiceColour (int i)
     {
         using namespace HarmonyEngineColours;
-        switch (i) { case 0: return accent; case 1: return mintAccent; case 2: return cyanAccent; default: return accentBright; }
+        switch (i % 4) { case 0: return accent; case 1: return mintAccent; case 2: return cyanAccent; default: return accentBright; }
     }
 }
 
@@ -38,7 +38,11 @@ HarmonyTab::VoiceCard::VoiceCard (juce::AudioProcessorValueTreeState& s, int i)
 {
     power.setButtonText ("Voice " + juce::String (i + 1));
     power.getProperties().set ("chip", true);
-    power.getProperties().set ("pillRole", i == 1 ? "mint" : (i == 2 ? "cyan" : "accent"));
+    power.getProperties().set ("pillRole", i % 4 == 1 ? "mint" : (i % 4 == 2 ? "cyan" : "accent"));
+    removeButton.getProperties().set ("ghost", true);
+    removeButton.setTooltip ("Remove this voice");
+    removeButton.setLookAndFeel (&HarmonyEngineLookAndFeel::shared());
+    addChildComponent (removeButton);
     power.setLookAndFeel (&HarmonyEngineLookAndFeel::shared());
     power.setTooltip ("Turn this harmony voice on or off");
     level.setTooltipText ("Voice level");
@@ -48,7 +52,7 @@ HarmonyTab::VoiceCard::VoiceCard (juce::AudioProcessorValueTreeState& s, int i)
         addAndMakeVisible (c);
 }
 
-HarmonyTab::VoiceCard::~VoiceCard() { power.setLookAndFeel (nullptr); }
+HarmonyTab::VoiceCard::~VoiceCard() { power.setLookAndFeel (nullptr); removeButton.setLookAndFeel (nullptr); }
 
 void HarmonyTab::VoiceCard::paint (juce::Graphics& g)
 {
@@ -73,6 +77,8 @@ void HarmonyTab::VoiceCard::resized()
     auto r = getLocalBounds().reduced (14, 12);
     auto top = r.removeFromTop (28);
     power.setBounds (top.removeFromLeft (96));
+    top.removeFromLeft (6);
+    removeButton.setBounds (top.removeFromLeft (28));
     r.removeFromTop (10);
     mode.setBounds (r.removeFromTop (30));
     r.removeFromTop (14);
@@ -99,8 +105,17 @@ HarmonyTab::HarmonyTab (juce::AudioProcessorValueTreeState& s, const HarmonyEngi
     for (int i = 0; i < HarmonyEngine::numVoices; ++i)
     {
         voiceCards[(size_t) i] = std::make_unique<VoiceCard> (s, i);
-        addAndMakeVisible (*voiceCards[(size_t) i]);
+        voiceStrip.addChildComponent (*voiceCards[(size_t) i]);
+        voiceCards[(size_t) i]->removeButton.onClick = [this] { removeLastVoice(); };
     }
+    addVoiceCard.onClick = [this] { showAddVoiceMenu(); };
+    voiceStrip.addAndMakeVisible (addVoiceCard);
+    voiceViewport.setViewedComponent (&voiceStrip, false);
+    voiceViewport.setScrollBarsShown (false, true);
+    voiceViewport.setScrollBarThickness (8);
+    voiceViewport.getHorizontalScrollBar().setColour (juce::ScrollBar::thumbColourId, HarmonyEngineColours::textSecondary.withAlpha (0.5f));
+    addAndMakeVisible (voiceViewport);
+    shownVoices = visibleVoiceCount();
     voiceNotes.fill (-1);
 
     // ---- Export harmonies ----
@@ -224,6 +239,7 @@ void HarmonyTab::timerCallback()
         }
     }
     repaint (chordCard.getUnion (keyboardCard));
+    if (visibleVoiceCount() != shownVoices) { shownVoices = visibleVoiceCount(); layoutVoices(); } // preset / undo / session load
     if (exporter.getState() != lastExportState) updateExportControls();
     else if (exporter.getState() == HarmonyExporter::State::recording) repaint (exportBar);
 }
@@ -410,12 +426,119 @@ void HarmonyTab::resized()
     humanizeKnob.setBounds (m);
 
     r.removeFromTop (10);
-    r = r.withHeight (juce::jmin (r.getHeight(), 230));
-    const int gap = 10;
-    const int cw = (r.getWidth() - gap * (HarmonyEngine::numVoices - 1)) / HarmonyEngine::numVoices;
-    for (auto& v : voiceCards)
+    voiceArea = r.withHeight (juce::jmin (r.getHeight(), 240));
+    layoutVoices();
+}
+
+int HarmonyTab::visibleVoiceCount() const
+{
+    if (auto* p = apvts.getRawParameterValue ("harm_voices"))
+        return juce::jlimit (1, HarmonyEngine::numVoices, juce::roundToInt (p->load()));
+    return 4;
+}
+
+void HarmonyTab::layoutVoices()
+{
+    const int n = shownVoices;
+    const bool canAdd = n < HarmonyEngine::numVoices;
+    const int gap = 10, addW = 64, minCard = 210;
+    const int avail = voiceArea.getWidth() - addW - gap;
+    const int cw = juce::jmax (minCard, (avail - gap * (n - 1)) / n);
+    const int contentW = n * cw + (n - 1) * gap + gap + addW;
+    const bool scrolls = contentW > voiceArea.getWidth();
+    const int h = voiceArea.getHeight() - (scrolls ? 12 : 0);
+
+    voiceViewport.setBounds (voiceArea);
+    voiceStrip.setSize (juce::jmax (contentW, voiceArea.getWidth()), h);
+    int x = 0;
+    for (int i = 0; i < HarmonyEngine::numVoices; ++i)
     {
-        v->setBounds (r.removeFromLeft (cw));
-        r.removeFromLeft (gap);
+        auto& v = *voiceCards[(size_t) i];
+        v.setVisible (i < n);
+        v.removeButton.setVisible (i == n - 1 && i >= 4);
+        if (i < n) { v.setBounds (x, 0, cw, h); x += cw + gap; }
     }
+    addVoiceCard.enabled = canAdd;
+    addVoiceCard.setBounds (x, 0, addW, h);
+    addVoiceCard.setTooltip (canAdd ? "Add a harmony voice: chord tones, Maj7 / Maj9 colours, Sus2 / Sus4 or random notes in the key"
+                                    : "All " + juce::String (HarmonyEngine::numVoices) + " voices are in use");
+    addVoiceCard.repaint();
+}
+
+void HarmonyTab::setParam (const juce::String& id, float plainValue)
+{
+    if (auto* p = apvts.getParameter (id))
+    {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 (plainValue));
+        p->endChangeGesture();
+    }
+}
+
+void HarmonyTab::showAddVoiceMenu()
+{
+    juce::PopupMenu m;
+    m.setLookAndFeel (&HarmonyEngineLookAndFeel::shared());
+    m.addSectionHeader ("Add a harmony voice");
+    m.addItem (1 + HarmonyEngine::chordAbove, "Chord tone above");
+    m.addItem (1 + HarmonyEngine::chordBelow, "Chord tone below");
+    m.addItem (1 + HarmonyEngine::octaveUp,   "Octave above");
+    m.addItem (1 + HarmonyEngine::octaveDown, "Octave below");
+    m.addSectionHeader ("Colour");
+    m.addItem (1 + HarmonyEngine::maj7Colour, "Maj7  (the 7th of the chord)");
+    m.addItem (1 + HarmonyEngine::maj9Colour, "Maj9  (the 9th of the chord)");
+    m.addItem (1 + HarmonyEngine::sus2Voice,  "Sus2  (moves through root, 2nd, 5th)");
+    m.addItem (1 + HarmonyEngine::sus4Voice,  "Sus4  (moves through root, 4th, 5th)");
+    m.addSectionHeader ("Just for fun");
+    m.addItem (1 + HarmonyEngine::randomInKey, "Random (in key)  - a new note every time you change notes");
+    juce::Component::SafePointer<HarmonyTab> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addVoiceCard).withMinimumWidth (260),
+                     [safe] (int r) { if (safe != nullptr && r > 0) safe->addVoice (r - 1); });
+}
+
+void HarmonyTab::addVoice (int mode)
+{
+    const int n = visibleVoiceCount();
+    if (n >= HarmonyEngine::numVoices) return;
+    const juce::String id = "harm_v" + juce::String (n + 1) + "_";
+    setParam (id + "mode", (float) mode);
+    setParam (id + "level", mode == HarmonyEngine::randomInKey ? -10.0f : -8.0f);
+    setParam (id + "on", 1.0f);
+    setParam ("harm_voices", (float) (n + 1));
+    shownVoices = n + 1;
+    layoutVoices();
+    // bring the new card into view
+    voiceViewport.setViewPosition (juce::jmax (0, voiceStrip.getWidth() - voiceViewport.getWidth()), 0);
+}
+
+void HarmonyTab::removeLastVoice()
+{
+    const int n = visibleVoiceCount();
+    if (n <= 4) return;
+    setParam ("harm_v" + juce::String (n) + "_on", 0.0f);
+    setParam ("harm_voices", (float) (n - 1));
+    shownVoices = n - 1;
+    layoutVoices();
+}
+
+void HarmonyTab::AddVoiceCard::paint (juce::Graphics& g)
+{
+    using namespace HarmonyEngineColours;
+    const auto b = getLocalBounds().toFloat().reduced (0.5f);
+    const bool hover = enabled && isMouseOver();
+    g.setColour (hover ? panelLight : panelLight.withAlpha (0.45f));
+    g.fillRoundedRectangle (b, 10.0f);
+    juce::Path border; border.addRoundedRectangle (b, 10.0f);
+    const float dashes[] = { 5.0f, 4.0f };
+    juce::Path dashed;
+    juce::PathStrokeType (1.2f).createDashedStroke (dashed, border, dashes, 2);
+    g.setColour ((hover ? accent : textSecondary).withAlpha (enabled ? 0.8f : 0.3f));
+    g.fillPath (dashed);
+    const auto c = b.getCentre();
+    g.setColour ((hover ? accent : textPrimary).withAlpha (enabled ? 0.9f : 0.3f));
+    g.fillRoundedRectangle (juce::Rectangle<float> (18.0f, 2.5f).withCentre (c), 1.2f);
+    g.fillRoundedRectangle (juce::Rectangle<float> (2.5f, 18.0f).withCentre (c), 1.2f);
+    g.setFont (HarmonyEngineUI::font (10.5f, true));
+    g.setColour (textSecondary.withAlpha (enabled ? 1.0f : 0.4f));
+    g.drawText (enabled ? "Add" : "Max", b.withTrimmedTop (c.y - b.getY() + 16.0f).withHeight (16.0f), juce::Justification::centred);
 }

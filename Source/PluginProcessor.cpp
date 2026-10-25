@@ -629,6 +629,7 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
         harmony.setLeadGainDb(loadP(harmLeadParam, 0.0f));
         harmony.setUseSidechainChords(juce::roundToInt(loadP(harmSourceParam, 0.0f)) == 0);
         harmony.setScaleMask(packScaleDegreeMask());
+        harmony.setKeyRoot(currentRoot());
         harmony.setTotalLatency(getLatencySamples());
         juce::AudioBuffer<float> dryView(harmonyDry.getArrayOfWritePointers(), juce::jmin(harmonyDry.getNumChannels(), buffer.getNumChannels()), buffer.getNumSamples());
         harmony.process(dryView, buffer);
@@ -823,8 +824,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::crea
 
     // ---- Harmony tab ----
     {
-        const int   defMode[] = { HarmonyEngine::chordAbove, HarmonyEngine::chordBelow, HarmonyEngine::octaveDown, HarmonyEngine::chordAbove2 };
-        const float defPan[]  = { -0.45f, 0.45f, 0.0f, 0.7f };
+        const int   defMode[] = { HarmonyEngine::chordAbove, HarmonyEngine::chordBelow, HarmonyEngine::octaveDown, HarmonyEngine::chordAbove2,
+                                  HarmonyEngine::maj7Colour, HarmonyEngine::maj9Colour, HarmonyEngine::sus4Voice, HarmonyEngine::randomInKey };
+        const float defPan[]  = { -0.45f, 0.45f, 0.0f, 0.7f, -0.7f, 0.3f, -0.25f, 0.55f };
+        static_assert(HarmonyEngine::numVoices == 8, "update the voice defaults");
         const auto dbAttr = juce::AudioParameterFloatAttributes().withLabel("dB");
         for (int v = 0; v < HarmonyEngine::numVoices; ++v)
         {
@@ -835,6 +838,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::crea
             layout.add(std::make_unique<APF>(id + "pan", nm + "Pan", NR(-1.0f, 1.0f, 0.01f), defPan[v]));
             layout.add(std::make_unique<APF>(id + "formant", nm + "Formant", NR(-6.0f, 6.0f, 0.1f), 0.0f));
         }
+        layout.add(std::make_unique<juce::AudioParameterInt>("harm_voices", "Harmony Voice Slots", 4, HarmonyEngine::numVoices, 4,
+            juce::AudioParameterIntAttributes().withAutomatable(false)));
         layout.add(std::make_unique<APF>("harm_mix", "Harmony Mix", NR(-60.0f, 6.0f, 0.1f), 0.0f, dbAttr));
         layout.add(std::make_unique<APF>("harm_lead", "Lead Level", NR(-60.0f, 6.0f, 0.1f), 0.0f, dbAttr));
         layout.add(std::make_unique<APF>("harm_humanize", "Harmony Humanize", NR(0.0f, 1.0f, 0.01f), 0.4f));
