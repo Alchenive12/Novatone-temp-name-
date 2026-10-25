@@ -136,8 +136,9 @@ namespace
             return frameMax;
         }
 
-        /** Iterative multi-F0 estimation on the current peaks. */
-        void estimate (std::vector<FrameF0>& out)
+        /** Iterative multi-F0 estimation on the current peaks. `expected` (pitches of notes
+            already sounding) is reserved for continuation hysteresis, currently unused. */
+        void estimate (std::vector<FrameF0>& out, const std::vector<float>& /*expected*/)
         {
             out.clear();
             if (peaks.empty()) return;
@@ -163,14 +164,16 @@ namespace
                 }
                 bestF = refineFromPartials (bestF);
                 bestS = juce::jmax (bestS, salience (bestF));
+                // Continuation hysteresis was tried and fragmented notes on the bench; kept off.
+                const bool continuing = false;
 
                 if (j == 1) firstS = bestS;
-                if (j > 1 && bestS < relFloor * firstS) break;
+                if (j > 1 && bestS < (continuing ? 0.35f : 1.0f) * relFloor * firstS) break;
 
                 sumS += bestS;
                 const float score = sumS / std::pow ((float) j, gamma);
-                if (j > 1 && score <= prevScore) break;
-                prevScore = score;
+                if (j > 1 && score <= prevScore && ! continuing) break;
+                prevScore = juce::jmax (prevScore, score);
 
                 FrameF0 f0;
                 f0.midi = hzToMidi (bestF);
@@ -476,6 +479,10 @@ namespace
 
                 const float ln = levelDuring (n, l), ll = levelDuring (l, n);
 
+                // Far quieter than a note sounding with it (-24 dB): residue, not a voice
+                if (ln < 0.063f * ll)
+                    drop[i] = true;
+
                 // Short weak blip next to a sustained, louder note
                 if (len < shortLen && ln < shortRatio * ll)
                     drop[i] = true;
@@ -526,28 +533,35 @@ Analysis analyse (const float* mono, int numSamples, double sampleRate, const An
     const float gate = clipMax * 0.006f; // -44 dB below the loudest frame
     const auto onsets = pickOnsets (flux);
 
-    for (int f = 0; f < result.numFrames; ++f)
-    {
-        if (frameMax[(size_t) f] < gate) continue;
-        fa.computePeaks (mono, numSamples, f * result.hopSize);
-        fa.estimate (frames[(size_t) f]);
-        if ((f & 31) == 0)
-        {
-            if (shouldCancel && shouldCancel()) return result;
-            if (progress) progress (0.9f * (float) f / (float) result.numFrames);
-        }
-    }
-
-    // Pass 2: tracking
+    // Pass 2: estimation + tracking together (tracks feed back as expected pitches)
     constexpr int maxGap = 4;
     constexpr int minLen = 6;
     constexpr float linkTol = 0.55f; // semitones between consecutive frames
     std::vector<Track> tracks;
     std::vector<Track> finished;
+    std::vector<float> expected;
 
     for (int f = 0; f < result.numFrames; ++f)
     {
         auto& dets = frames[(size_t) f];
+        if (frameMax[(size_t) f] >= gate)
+        {
+            expected.clear();
+            for (auto& t : tracks)
+            {
+                int present = 0;
+                for (bool p : t.present) present += p ? 1 : 0;
+                if (present >= 3) expected.push_back (t.lastMidi);
+            }
+            fa.computePeaks (mono, numSamples, f * result.hopSize);
+            fa.estimate (dets, expected);
+        }
+        if ((f & 31) == 0)
+        {
+            if (shouldCancel && shouldCancel()) return result;
+            if (progress) progress (0.9f * (float) f / (float) result.numFrames);
+        }
+
         std::sort (dets.begin(), dets.end(), [] (const FrameF0& a, const FrameF0& b) { return a.salience > b.salience; });
         std::vector<bool> claimed (tracks.size(), false);
 

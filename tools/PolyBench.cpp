@@ -4,6 +4,7 @@
 #include <JuceHeader.h>
 #include "DSP/TuneEngine.h"
 #include "Poly/PolyAnalyzer.h"
+#include "Poly/PolyRenderer.h"
 #include <random>
 #include <map>
 #include <set>
@@ -346,7 +347,17 @@ float noteEnergy(const std::vector<float>& x, int start, int len, int midi, int 
     float e = 0; for (int h = 1; h <= harmonics; ++h) e += bandEnergy(x, start, len, midiToHz(midi) * h); return e;
 }
 
-void runEdit(Inst inst, std::vector<int> chord, int from, int to)
+void writeWav(const juce::String& name, const std::vector<float>& x)
+{
+    juce::File f = juce::File::getCurrentWorkingDirectory().getChildFile(name + ".wav");
+    f.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> w(wav.createWriterFor(new juce::FileOutputStream(f), sr, 1, 24, {}, 0));
+    juce::AudioBuffer<float> b(1, (int) x.size()); b.copyFrom(0, 0, x.data(), (int) x.size());
+    w->writeFromAudioSampleBuffer(b, 0, b.getNumSamples());
+}
+
+void runEdit(Inst inst, std::vector<int> chord, int from, int to, const juce::String& wavName = {})
 {
     auto audio = renderCase(chords("edit", inst, { { chord, 3.0 } }));
     // Reference: the chord we *want* (from replaced by to), rendered the same way.
@@ -368,6 +379,12 @@ void runEdit(Inst inst, std::vector<int> chord, int from, int to)
     }
 
     const int lat = e.getLatencySamples();
+    if (wavName.isNotEmpty())
+    {
+        std::vector<float> aligned(out.size(), 0.0f);
+        for (size_t i = 0; i + (size_t) lat < out.size(); ++i) aligned[i] = out[i + (size_t) lat];
+        writeWav(wavName + "_2_old-engine", aligned);
+    }
     const int a = (int) (1.2 * sr), len = (int) (1.0 * sr);
     const int H = 6;
     auto db = [](float r) { return 10.0f * std::log10(std::max(1e-9f, r)); };
@@ -383,6 +400,93 @@ void runEdit(Inst inst, std::vector<int> chord, int from, int to)
               << "      other notes change:       " << juce::String(db(otherOut / otherIn), 1) << " dB   (ideal: about 0 dB)\n";
 }
 } // namespace
+
+/** New clip renderer: analyse, edit the detected note, render, measure. */
+void runClipEdit(Inst inst, std::vector<int> chord, int from, int to, double vibrato = -1.0, const juce::String& wavName = {})
+{
+    auto c = chords("edit", inst, { { chord, 3.0 } }); c.vibrato = vibrato;
+    auto audio = renderCase(c);
+    auto wanted = chord; for (auto& m : wanted) if (m == from) m = to;
+    auto cw = chords("want", inst, { { wanted, 3.0 } }); cw.vibrato = vibrato;
+    auto ref = renderCase(cw);
+
+    const auto an = Poly::analyse(audio.data(), (int) audio.size(), sr);
+    const Poly::Note* target = nullptr;
+    for (auto& n : an.notes)
+        if ((int) std::lround(n.midi) == from && (target == nullptr || (n.endFrame - n.startFrame) > (target->endFrame - target->startFrame)))
+            target = &n;
+    std::cout << "  " << juce::String(instName(inst)).paddedRight(' ', 8) << " [" << setStr({chord.begin(), chord.end()}) << "]  move "
+              << noteName(from) << " -> " << noteName(to) << ":";
+    if (std::getenv("POLY_DEBUG"))
+        for (auto& n : an.notes)
+            std::cout << "\n        detected " << noteName((int) std::lround(n.midi)) << " (" << juce::String(n.midi, 2) << ") "
+                      << juce::String(an.frameToSeconds(n.startFrame), 2) << "-" << juce::String(an.frameToSeconds(n.endFrame), 2) << "s level " << juce::String(n.level, 4);
+    if (target == nullptr) { std::cout << "  (note not detected)\n"; return; }
+    std::cout << "\n";
+
+    juce::AudioBuffer<float> in(1, (int) audio.size()), out;
+    in.copyFrom(0, 0, audio.data(), (int) audio.size());
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    Poly::render(in, sr, an, { { target->id, (float) (to - from), 0.0f, 0.0f } }, out);
+    const double took = (juce::Time::getMillisecondCounterHiRes() - t0) * 0.001;
+    std::vector<float> o(out.getReadPointer(0), out.getReadPointer(0) + out.getNumSamples());
+
+    const int a = (int) (1.2 * sr), len = (int) (1.0 * sr), H = 6;
+    auto db = [](float r) { return 10.0f * std::log10(std::max(1e-9f, r)); };
+    // Only partials that belong to one note alone are measured (shared ones legitimately stay).
+    auto isShared = [&](double hz, int self, const std::vector<int>& notes)
+    {
+        for (int m : notes) if (m != self)
+            for (int h = 1; h <= 30; ++h) if (std::abs(midiToHz(m) * h - hz) < std::max(6.0, hz * 0.012)) return true;
+        return false;
+    };
+    auto ownEnergy = [&](const std::vector<float>& x, int midi, const std::vector<int>& notes, int harmonics)
+    {
+        float e = 0; for (int h = 1; h <= harmonics; ++h) { const double hz = midiToHz(midi) * h; if (!isShared(hz, midi, notes)) e += bandEnergy(x, a, len, hz); } return e;
+    };
+    std::vector<int> both = chord; both.push_back(to);
+    const float inFrom = ownEnergy(audio, from, both, H), outFrom = ownEnergy(o, from, both, H);
+    const float refTo  = ownEnergy(ref, to, both, H),     outTo  = ownEnergy(o, to, both, H);
+    float otherIn = 0, otherOut = 0;
+    for (int m : chord) if (m != from)
+    {
+        const float ei = ownEnergy(audio, m, both, H), eo = ownEnergy(o, m, both, H);
+        if (ei <= 0.0f) continue; // every partial shared with the moved note: nothing to measure
+        otherIn += ei; otherOut += eo;
+        if (std::getenv("POLY_DEBUG")) std::cout << "        " << noteName(m) << " " << juce::String(db(eo / ei), 1) << " dB\n";
+    }
+
+    std::cout << "      old note left in output:  " << juce::String(db(outFrom / inFrom), 1) << " dB   (ideal: below -25 dB)\n"
+              << "      new note level vs ideal:  " << juce::String(db(outTo / refTo), 1) << " dB   (ideal: within 3 dB)\n"
+              << "      other notes change:       " << juce::String(db(otherOut / otherIn), 1) << " dB   (ideal: within 1 dB)\n"
+              << "      render time:              " << juce::String(took, 2) << " s for 3 s of audio\n";
+
+    if (wavName.isNotEmpty())
+    {
+        writeWav(wavName + "_1_original", audio);
+        writeWav(wavName + "_3_new-engine", o);
+        writeWav(wavName + "_4_ideal", ref);
+    }
+}
+
+void runIdentity()
+{
+    auto c = chords("id", Inst::Choir, { { { 57, 60, 64 }, 2.0 } });
+    auto audio = renderCase(c);
+    const auto an = Poly::analyse(audio.data(), (int) audio.size(), sr);
+    juce::AudioBuffer<float> in(1, (int) audio.size()), out;
+    in.copyFrom(0, 0, audio.data(), (int) audio.size());
+    // Untouched clip must come back bit-identical
+    Poly::render(in, sr, an, {}, out);
+    bool identical = true;
+    for (int i = 0; i < out.getNumSamples(); ++i) if (out.getSample(0, i) != audio[(size_t) i]) identical = false;
+    std::cout << "  no edits: output " << (identical ? "bit-identical to input" : "DIFFERS from input") << "\n";
+    // Remove + resynthesise at the same pitch: how close to the original? (fidelity of the note model)
+    Poly::render(in, sr, an, { { an.notes.empty() ? 0 : an.notes[0].id, 0.0f, 0.01f, 0.0f } }, out);
+    double err = 0, ref = 0;
+    for (int i = 0; i < out.getNumSamples(); ++i) { const double d = out.getSample(0, i) - audio[(size_t) i]; err += d * d; ref += (double) audio[(size_t) i] * audio[(size_t) i]; }
+    std::cout << "  +0.01 dB gain edit: difference " << juce::String(10.0 * std::log10(std::max(1e-20, err / ref)), 1) << " dB below signal (ideal: below -20 dB)\n";
+}
 
 int main(int argc, char** argv)
 {
@@ -420,6 +524,27 @@ int main(int argc, char** argv)
         }
         printScore("OVERALL", total, true);
         std::cout << "analysis speed: " << juce::String(audioSecs / std::max(1e-6, secs), 1) << "x real time\n";
+    }
+    if (mode == "render" || mode == "all")
+    {
+        std::cout << "\n=== NEW clip renderer (move one chord note, measure output) ===\n";
+        runIdentity();
+        runClipEdit(Inst::Piano,   { 48, 52, 55 }, 52, 53);
+        runClipEdit(Inst::Choir,   { 57, 60, 64 }, 60, 62);
+        runClipEdit(Inst::Choir,   { 57, 60, 64 }, 64, 63);
+        runClipEdit(Inst::Guitar,  { 52, 55, 60 }, 55, 57);
+        runClipEdit(Inst::Guitar,  { 45, 52, 57, 60, 64 }, 60, 61);
+        runClipEdit(Inst::Strings, { 48, 55, 64 }, 55, 53);
+    }
+    if (mode == "listen")
+    {
+        // Listening examples: original / old engine / new engine / ideal
+        runClipEdit(Inst::Choir,   { 57, 60, 64 }, 60, 61, -1.0, "vocals_Am-to-A_C4-to-C#4");
+        runEdit    (Inst::Choir,   { 57, 60, 64 }, 60, 61,       "vocals_Am-to-A_C4-to-C#4");
+        runClipEdit(Inst::Guitar,  { 52, 55, 60 }, 55, 57, -1.0, "guitar_C-to-Am_G3-to-A3");
+        runEdit    (Inst::Guitar,  { 52, 55, 60 }, 55, 57,       "guitar_C-to-Am_G3-to-A3");
+        runClipEdit(Inst::Strings, { 48, 55, 64 }, 64, 63, -1.0, "strings_C-to-Cm_E4-to-Eb4");
+        runEdit    (Inst::Strings, { 48, 55, 64 }, 64, 63,       "strings_C-to-Cm_E4-to-Eb4");
     }
     if (mode == "edit" || mode == "all")
     {
