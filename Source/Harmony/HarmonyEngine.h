@@ -360,13 +360,14 @@ private:
             int t;
             if (v.settings.mode == randomInKey)
             {
-                // a new random in-key note (a 3rd .. a 6th away, up or down) for every new lead note
+                // a new random in-key note (a 3rd .. a 6th ABOVE the lead) for every new lead note;
+                // never below the lead, so it can't become the bottom of the stack and muddy the low end
                 if (leadNote != v.randomFor)
                 {
                     v.randomFor = leadNote;
                     int cand[24]; int nc = 0;
-                    for (int d = -9; d <= 9; ++d)
-                        if (std::abs (d) >= 3 && ((scaleMask >> (((leadNote + d) % 12 + 12) % 12)) & 1u)) cand[nc++] = leadNote + d;
+                    for (int d = 3; d <= 9; ++d)
+                        if (((scaleMask >> (((leadNote + d) % 12 + 12) % 12)) & 1u)) cand[nc++] = leadNote + d;
                     rng = rng * 1664525u + 1013904223u;
                     v.randomTarget = nc > 0 ? cand[(rng >> 8) % (juce::uint32) nc] : leadNote + 12;
                 }

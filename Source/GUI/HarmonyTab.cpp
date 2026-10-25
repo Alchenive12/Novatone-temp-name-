@@ -490,7 +490,7 @@ void HarmonyTab::showAddVoiceMenu()
     m.addItem (1 + HarmonyEngine::sus2Voice,  "Sus2  (moves through root, 2nd, 5th)");
     m.addItem (1 + HarmonyEngine::sus4Voice,  "Sus4  (moves through root, 4th, 5th)");
     m.addSectionHeader ("Just for fun");
-    m.addItem (1 + HarmonyEngine::randomInKey, "Random (in key)  - a new note every time you change notes");
+    m.addItem (1 + HarmonyEngine::randomInKey, "Random (in key)  - a new note above the lead every time you change notes");
     juce::Component::SafePointer<HarmonyTab> safe (this);
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addVoiceCard).withMinimumWidth (260),
                      [safe] (int r) { if (safe != nullptr && r > 0) safe->addVoice (r - 1); });
