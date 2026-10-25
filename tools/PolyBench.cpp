@@ -564,6 +564,74 @@ void runSession()
               << tree.getProperty("file").toString() << "\n";
 }
 
+/** Real audio: analyse, list notes, render "snap all to semitones" and "move one note". */
+void runFile(const juce::String& path)
+{
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> r(fm.createReaderFor(juce::File(path)));
+    if (r == nullptr) { std::cout << "can't read " << path << "\n"; return; }
+    juce::AudioBuffer<float> in((int) r->numChannels, (int) r->lengthInSamples);
+    r->read(&in, 0, in.getNumSamples(), 0, true, true);
+    std::vector<float> mono((size_t) in.getNumSamples());
+    for (int i = 0; i < in.getNumSamples(); ++i) { float v = 0; for (int c = 0; c < in.getNumChannels(); ++c) v += in.getSample(c, i); mono[(size_t) i] = v / (float) in.getNumChannels(); }
+
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    const auto an = Poly::analyse(mono.data(), (int) mono.size(), r->sampleRate);
+    const double took = (juce::Time::getMillisecondCounterHiRes() - t0) * 0.001;
+    std::cout << "analysed " << juce::String(in.getNumSamples() / r->sampleRate, 1) << " s in " << juce::String(took, 2) << " s, "
+              << an.notes.size() << " notes\n";
+
+    // polyphony over time
+    std::vector<int> poly((size_t) an.numFrames, 0);
+    for (auto& n : an.notes) for (int f = n.startFrame; f < n.endFrame; ++f) ++poly[(size_t) f];
+    std::map<int, int> hist; int voicedFrames = 0;
+    for (int p : poly) if (p > 0) { hist[p]++; ++voicedFrames; }
+    std::cout << "simultaneous notes (share of sung frames):";
+    for (auto& [k, v] : hist) std::cout << "  " << k << ": " << juce::roundToInt(100.0 * v / std::max(1, voicedFrames)) << "%";
+    std::cout << "\n";
+    for (auto& n : an.notes)
+    {
+        double dev = 0; for (float m : n.pitchMidi) dev += std::abs(m - n.midi);
+        std::cout << "  " << juce::String(an.frameToSeconds(n.startFrame), 2).paddedLeft(' ', 6) << "-" << juce::String(an.frameToSeconds(n.endFrame), 2).paddedRight(' ', 6)
+                  << " " << noteName((int) std::lround(n.midi)).paddedRight(' ', 4) << " (" << juce::String((n.midi - std::lround(n.midi)) * 100, 0).paddedLeft(' ', 4) << " c off)"
+                  << "  level " << juce::String(n.level, 4) << "\n";
+    }
+
+    auto write = [&](const juce::String& name, const juce::AudioBuffer<float>& b)
+    {
+        juce::File f = juce::File::getCurrentWorkingDirectory().getChildFile(name);
+        f.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w(wav.createWriterFor(new juce::FileOutputStream(f), r->sampleRate, (unsigned) b.getNumChannels(), 24, {}, 0));
+        w->writeFromAudioSampleBuffer(b, 0, b.getNumSamples());
+    };
+
+    // Edit 1: snap every note exactly onto its nearest semitone (hard pitch correction of all voices)
+    std::vector<Poly::NoteEdit> snap;
+    for (auto& n : an.notes) snap.push_back({ n.id, (float) std::lround(n.midi) - n.midi, 0.0f, 0.0f });
+    juce::AudioBuffer<float> out;
+    auto t1 = juce::Time::getMillisecondCounterHiRes();
+    Poly::render(in, r->sampleRate, an, snap, out);
+    std::cout << "render 'snap all' took " << juce::String((juce::Time::getMillisecondCounterHiRes() - t1) * 0.001, 2) << " s\n";
+    write("edit_snap_all.wav", out);
+
+    // Edit 2: move the longest note that has another note sounding with it up a whole tone
+    const Poly::Note* pick = nullptr;
+    for (auto& n : an.notes)
+    {
+        bool together = false;
+        for (auto& o : an.notes) if (&o != &n && o.startFrame < n.endFrame && o.endFrame > n.startFrame) together = true;
+        if ((together || pick == nullptr) && (pick == nullptr || n.endFrame - n.startFrame > pick->endFrame - pick->startFrame)) pick = &n;
+    }
+    if (pick != nullptr)
+    {
+        Poly::render(in, r->sampleRate, an, { { pick->id, 2.0f, 0.0f, 0.0f } }, out);
+        std::cout << "moved " << noteName((int) std::lround(pick->midi)) << " at " << juce::String(an.frameToSeconds(pick->startFrame), 2) << "-"
+                  << juce::String(an.frameToSeconds(pick->endFrame), 2) << " s up a whole tone\n";
+        write("edit_move_one.wav", out);
+    }
+}
+
 int main(int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI init;
@@ -614,6 +682,8 @@ int main(int argc, char** argv)
     }
     if (mode == "session" || mode == "all")
         runSession();
+    if (mode == "file" && argc > 2)
+        runFile(argv[2]);
     if (mode == "listen")
     {
         // Listening examples: original / old engine / new engine / ideal
