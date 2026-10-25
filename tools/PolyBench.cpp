@@ -664,6 +664,40 @@ void runHarmony()
     HarmonyEngine::VoiceSettings below; below.on = false; below.mode = HarmonyEngine::chordBelow; below.levelDb = 0;
     h.setVoice(0, above); h.setVoice(1, below);
 
+    // Listening example: lead + both voices, humanized, with the beat
+    {
+        HarmonyEngine hl; hl.prepare(sr, blockSize); hl.setTotalLatency(latency); hl.setHumanize(0.4f); hl.setLeadGainDb(0.0f);
+        auto a2 = above, b2 = below; a2.on = b2.on = true; a2.levelDb = b2.levelDb = -4.0f; a2.pan = -0.5f; b2.pan = 0.5f;
+        hl.setVoice(0, a2); hl.setVoice(1, b2);
+        juce::AudioBuffer<float> sb(2, blockSize), d(2, blockSize), io(2, blockSize), all(2, n);
+        all.clear();
+        for (int pos = 0; pos + blockSize <= n; pos += blockSize)
+        {
+            for (int c = 0; c < 2; ++c) { sb.copyFrom(c, 0, sideAudio.data() + pos, blockSize); d.copyFrom(c, 0, leadAudio.data() + pos, blockSize); }
+            // the plugin's lead output is the lead delayed by its latency
+            for (int c = 0; c < 2; ++c) for (int i = 0; i < blockSize; ++i) { const int src = pos + i - latency; io.setSample(c, i, src >= 0 ? leadAudio[(size_t) src] : 0.0f); }
+            hl.processSidechain(sb);
+            hl.process(d, io);
+            for (int c = 0; c < 2; ++c) all.copyFrom(c, pos, io, c, 0, blockSize);
+        }
+        // mix in the beat (latency-aligned) at a lower level, write: lead alone, then lead + harmonies
+        juce::AudioBuffer<float> out(2, n * 2 + (int) sr);
+        out.clear();
+        for (int i = 0; i + latency < n; ++i)
+            for (int c = 0; c < 2; ++c)
+            {
+                const float beat = 0.6f * sideAudio[(size_t) i];
+                out.setSample(c, i, leadAudio[(size_t) i] + beat);
+                out.setSample(c, n + (int) sr + i, all.getSample(c, i + latency) + beat);
+            }
+        out.applyGain(0.8f / std::max(1e-6f, out.getMagnitude(0, out.getNumSamples())));
+        juce::File f = juce::File::getCurrentWorkingDirectory().getChildFile("harmony_example.wav");
+        f.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatWriter> w(wav.createWriterFor(new juce::FileOutputStream(f), sr, 2, 16, {}, 0));
+        w->writeFromAudioSampleBuffer(out, 0, out.getNumSamples());
+    }
+
     // Pass 1: voice "chord tone above" only; pass 2 "chord tone below" only (so each output is one voice)
     for (int pass = 0; pass < 2; ++pass)
     {

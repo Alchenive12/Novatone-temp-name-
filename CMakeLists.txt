@@ -73,6 +73,7 @@ target_sources(NovaTone PRIVATE
     Source/GUI/ModuleTabs.cpp
     Source/GUI/PitchTraceComponent.cpp
     Source/GUI/TuneTab.cpp
+    Source/GUI/HarmonyTab.cpp
     Source/Poly/PolyAnalyzer.cpp
     Source/Poly/PolyRenderer.cpp
     Source/Poly/PolyClipSession.cpp)

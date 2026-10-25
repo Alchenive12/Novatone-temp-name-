@@ -3,6 +3,8 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "GUI/PitchTraceComponent.h"
+#include "GUI/HarmonyTab.h"
+#include "GUI/TuneTab.h"
 
 static void save(juce::Component& c, const juce::File& f, float scale)
 {
@@ -79,6 +81,7 @@ int main(int argc, char** argv)
 
     std::unique_ptr<juce::AudioProcessor> proc(createPluginFilter());
     const bool polyTest = argc > 8 && juce::String(argv[8]) == "poly";
+    const bool harmonyTest = argc > 8 && juce::String(argv[8]) == "harmony";
     const int theme = argc > 5 ? std::atoi(argv[5]) : 0;
     if (auto* p = dynamic_cast<juce::RangedAudioParameter*>(dynamic_cast<NovaToneAudioProcessor*>(proc.get())->apvts.getParameter("ui_theme")))
         p->setValueNotifyingHost(p->convertTo0to1((float) theme));
@@ -178,10 +181,55 @@ int main(int argc, char** argv)
         playHead.playing = false;
     }
 
+    if (harmonyTest)
+    {
+        // Enable the sidechain bus, play C - Am - F - G into it and a sung melody into the main input
+        auto layout = proc->getBusesLayout();
+        if (layout.inputBuses.size() > 1) layout.inputBuses.getReference(1) = juce::AudioChannelSet::stereo();
+        std::cout << "sidechain layout accepted: " << (proc->setBusesLayout(layout) ? "yes" : "no") << "\n";
+        proc->prepareToPlay(48000.0, 512);
+        for (auto [id, v] : { std::pair<const char*, float> { "harm_v1_on", 1.0f }, { "harm_v2_on", 1.0f } })
+            if (auto* prm = np->apvts.getParameter(id)) prm->setValueNotifyingHost(v);
+        std::vector<std::vector<int>> chords;
+        auto beat = makeProgression(48000.0, chords);
+        const int leadNotes[] = { 64, 64, 65, 62 };
+        juce::AudioBuffer<float> big(4, 512);
+        double lph = 0;
+        for (int pos = 0; pos + 512 <= beat.getNumSamples(); pos += 512)
+        {
+            for (int i = 0; i < 512; ++i)
+            {
+                const double t = (pos + i) / 48000.0;
+                const int bar = juce::jlimit(0, 3, (int) ((t - 0.1) / 1.6));
+                const double f = 440.0 * std::pow(2.0, (leadNotes[bar] - 69 + 0.3 * std::sin(t * 2 * 3.14159 * 5.2)) / 12.0);
+                lph += 2 * 3.14159265 * f / 48000.0;
+                const float s = (float) (0.15 * std::sin(lph) + 0.07 * std::sin(2 * lph) + 0.04 * std::sin(3 * lph));
+                big.setSample(0, i, s); big.setSample(1, i, s);
+                big.setSample(2, i, beat.getSample(0, pos + i)); big.setSample(3, i, beat.getSample(1, pos + i));
+            }
+            proc->processBlock(big, midi);
+            if (pos > (int) (0.1 + 1.6 * 2 + 0.9) * 48000) break; // stop inside the F chord for the screenshot
+        }
+    }
+
     std::unique_ptr<juce::AudioProcessorEditor> ed(proc->createEditor());
     ed->setSize(w, h);
     ed->setVisible(true);
-    for (int b = 0; b < (polyTest ? 0 : 300); ++b)
+    if (harmonyTest)
+    {
+        std::function<void(juce::Component&)> show = [&](juce::Component& c)
+        {
+            for (auto* ch : c.getChildren())
+            {
+                if (dynamic_cast<HarmonyTab*>(ch) != nullptr) ch->setVisible(true);
+                else if (dynamic_cast<TuneTab*>(ch) != nullptr) ch->setVisible(false);
+                else show(*ch);
+            }
+        };
+        show(*ed);
+        pump(300);
+    }
+    for (int b = 0; b < ((polyTest || harmonyTest) ? 0 : 300); ++b)
     {
         for (int i = 0; i < 512; ++i)
         {

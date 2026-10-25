@@ -28,6 +28,22 @@ PresetBar::PresetBar(PresetManager& manager, juce::AudioProcessorValueTreeState&
 
     themeBox.setTooltip("Switch the UI skin across Alchenive plugins (NovaTone, Harmony Engine, The Drum Master, The Conductor, AmpPire)");
     themeBox.getProperties().set("caption", "Theme");
+
+    for (auto* b : { &tuneTabButton, &harmonyTabButton })
+    {
+        b->setLookAndFeel(&laf);
+        b->setRadioGroupId(0x7ab);
+        b->setClickingTogglesState(true);
+        b->getProperties().set("pillRole", "cyan");
+        addAndMakeVisible(b);
+    }
+    tuneTabButton.getProperties().set("segment", "first");
+    harmonyTabButton.getProperties().set("segment", "last");
+    tuneTabButton.setToggleState(true, juce::dontSendNotification);
+    tuneTabButton.setTooltip("Pitch & time editing");
+    harmonyTabButton.setTooltip("Chord-aware harmonies from your vocal, following the beat on the sidechain");
+    tuneTabButton.onClick    = [this] { if (onTabChanged) onTabChanged(0); };
+    harmonyTabButton.onClick = [this] { if (onTabChanged) onTabChanged(1); };
     themeBox.getProperties().set("ghost", true);
     presetBox.getProperties().set("caption", "Preset");
     saveButton.getProperties().set("ghost", true);
@@ -72,6 +88,8 @@ PresetBar::~PresetBar()
     themeBox.setLookAndFeel(nullptr);
     presetBox.setLookAndFeel(nullptr);
     saveButton.setLookAndFeel(nullptr);
+    tuneTabButton.setLookAndFeel(nullptr);
+    harmonyTabButton.setLookAndFeel(nullptr);
     saveAsButton.setLookAndFeel(nullptr);
 }
 
@@ -175,19 +193,24 @@ void PresetBar::paint(juce::Graphics& g)
     const float nameW = juce::GlyphArrangement::getStringWidth(g.getCurrentFont(), "NovaTone") + 2.0f;
     g.drawText("NovaTone", brand.removeFromLeft(nameW), juce::Justification::centredLeft);
 
-    brand.removeFromLeft(10.0f);
-    g.setFont(HarmonyEngineUI::font(12.0f, false));
-    if (juce::GlyphArrangement::getStringWidth(g.getCurrentFont(), "Pitch & time editor") <= brand.getWidth())
-    {
-        g.setColour(textSecondary);
-        g.drawText("Pitch & time editor", brand, juce::Justification::centredLeft, false);
-    }
+
+}
+
+void PresetBar::setActiveTab(int tab)
+{
+    tuneTabButton.setToggleState(tab == 0, juce::dontSendNotification);
+    harmonyTabButton.setToggleState(tab == 1, juce::dontSendNotification);
 }
 
 void PresetBar::resized()
 {
     auto r = getLocalBounds().reduced(16, 10);
     themeBox.setBounds(r.removeFromRight(juce::jmin(220, r.getWidth() / 5)));
+
+    // Brand (logo + name) then the Tune | Harmony switch
+    auto tabs = r.withLeft(r.getX() + 26 + 10 + 92).withWidth(2 * 80);
+    tuneTabButton.setBounds(tabs.removeFromLeft(80));
+    harmonyTabButton.setBounds(tabs);
 
     // Preset group is centred in the bar.
     const int groupW = 300 + 8 + 56 + 4 + 72;
@@ -198,7 +221,7 @@ void PresetBar::resized()
     group.removeFromLeft(4);
     saveAsButton.setBounds(group.removeFromLeft(72));
 
-    brandArea = r.withRight(presetBox.getX() - 12);
+    brandArea = r.withRight(tuneTabButton.getX() - 8);
 }
 
 //==============================================================================
@@ -378,9 +401,11 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
     presetBar(p.getPresetManager(), p.apvts, [this]
     {
         workstationView.refreshTheme();
+        harmonyView.refreshTheme();
         repaint();
     }),
     workstationView(p.apvts, p.getPitchTraceQueue()),
+    harmonyView(p.apvts, p.getHarmonyEngine(), [&p] { return p.isSidechainConnected(); }),
     masterBar(p.apvts, p.getInputPeakMeter(), p.getOutputPeakMeter())
 {
     if (defaultLookAndFeelUsers()++ == 0)
@@ -393,7 +418,14 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
 
     addAndMakeVisible(presetBar);
     addAndMakeVisible(workstationView);
+    addChildComponent(harmonyView);
     addAndMakeVisible(masterBar);
+    presetBar.onTabChanged = [this](int tab)
+    {
+        activeTab = tab;
+        workstationView.setVisible(tab == 0);
+        harmonyView.setVisible(tab == 1);
+    };
     masterBar.setCentreComponent(&workstationView.getTunerComponent());
     workstationView.setClipSession(&p.getPolyClip());
 
@@ -421,4 +453,5 @@ void NovaToneAudioProcessorEditor::resized()
     presetBar.setBounds(bounds.removeFromTop(52));
     masterBar.setBounds(bounds.removeFromBottom(48));
     workstationView.setBounds(bounds);
+    harmonyView.setBounds(bounds);
 }

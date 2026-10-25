@@ -9,6 +9,7 @@
 #include "PluginProcessor.h"
 #if __has_include("GUI/HarmonyEngineColours.h")
  #include "GUI/HarmonyEngineColours.h"
+ #include "GUI/HarmonyTab.h"
  #include "GUI/TuneTab.h"
  #include "GUI/ModuleTabs.h"
 #else
@@ -32,6 +33,9 @@ public:
     void resized() override;
     void applyCurrentThemeFromState(bool notify = true);
 
+    /** Fired with 0 (Tune) or 1 (Harmony) when the view switch is clicked. */
+    std::function<void(int)> onTabChanged;
+    void setActiveTab(int tab);
 private:
     void refresh();
     void save();
@@ -49,6 +53,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> themeAttachment;
     juce::ComboBox presetBox;
     juce::TextButton saveButton { "Save" }, saveAsButton { "Save as" };
+    juce::ToggleButton tuneTabButton { "Tune" }, harmonyTabButton { "Harmony" };
     juce::Rectangle<int> brandArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PresetBar)
@@ -115,7 +120,9 @@ private:
 
     PresetBar presetBar;
     TuneTab   workstationView;
+    HarmonyTab harmonyView;
     MasterBar masterBar;
+    int activeTab = 0;
     bool      ownsDefaultLookAndFeel = false;
     juce::TooltipWindow tooltipWindow { this, 500 };
 

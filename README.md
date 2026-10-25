@@ -31,6 +31,13 @@ analysis and edits are saved in the project with the plugin state.
 Engine: `Source/Poly/` (analyser, renderer, session). Benchmark: `tools/PolyBench.cpp`
 (`-DNOVATONE_BUILD_TOOLS=ON`, then `NovaTonePolyBench [live|clip|render|session|listen]`).
 
+## Harmony tab (sidechain chords)
+Switch to **Harmony** in the header. Route your beat / instrumental into NovaTone's **sidechain**
+input; the tab detects its chords live and generates up to four harmony voices from the lead vocal
+(chord tone above / below, 2 tones above / below, octave, chord root, unison double), each with
+level, pan and formant. Without a sidechain, harmonies follow the Tune tab's key & scale.
+Turn **Lead** all the way down to print the harmonies on their own track.
+
 ## UI previews without a DAW
 ```
 cmake -S . -B build-snap -DNOVATONE_BUILD_SNAPSHOT=ON
