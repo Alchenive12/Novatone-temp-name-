@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <algorithm>
 
 /**
     Pitch-synchronous overlap-add (TD-PSOLA) shifter for NovaTone.
@@ -209,7 +210,7 @@ private:
     void placeGrains() noexcept
     {
         const double frontier = static_cast<double> (written - 1 - synthesisLag);
-        const int64_t minValidMark = juce::jmax<int64_t> (1, markCount - markRingSize + 4);
+        const int64_t minValidMark = std::max<int64_t> (1, markCount - markRingSize + 4);
 
         for (;;)
         {
@@ -218,13 +219,13 @@ private:
             {
                 if (markCount < 3)
                     return;
-                pos = mark(juce::jmax<int64_t> (1, markCount - 3));
+                pos = mark(std::max<int64_t> (1, markCount - 3));
             }
             else
             {
                 if (lastGrain + 1 >= markCount)
                     return;
-                const int64_t gIdx = juce::jmax<int64_t> (lastGrain, minValidMark);
+                const int64_t gIdx = std::max<int64_t> (lastGrain, minValidMark);
                 const double spacing = juce::jmax(2.0, mark(gIdx + 1) - mark(gIdx));
                 pos = synthPos + spacing / juce::jmax(0.25, smoothedRatio);
             }
@@ -232,7 +233,7 @@ private:
             if (pos > frontier)
                 return;
 
-            int64_t k = juce::jmax<int64_t> (lastGrain, minValidMark);
+            int64_t k = std::max<int64_t> (lastGrain, minValidMark);
             while (k + 1 < markCount && std::abs(mark(k + 1) - pos) < std::abs(mark(k) - pos))
                 ++k;
             if (k + 1 >= markCount)

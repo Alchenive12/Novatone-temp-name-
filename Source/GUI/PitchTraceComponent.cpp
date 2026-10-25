@@ -1024,7 +1024,7 @@ void PitchTraceComponent::loadPhrasePreview()
     }
 
     viewStartHop = 0.0f;
-    visibleHopsCount = static_cast<float>(juce::jmax<size_t>(120, timeline.size() + 12));
+    visibleHopsCount = static_cast<float>(std::max<size_t>(120, timeline.size() + 12));
     viewCentreMidiNote = 63.0f;
     notifySelectionChanged();
     repaint();
@@ -1126,7 +1126,7 @@ void PitchTraceComponent::loadPolyphonicChordPreview()
     }
 
     viewStartHop = 0.0f;
-    visibleHopsCount = static_cast<float>(juce::jmax<size_t>(140, timeline.size() + 12));
+    visibleHopsCount = static_cast<float>(std::max<size_t>(140, timeline.size() + 12));
     viewCentreMidiNote = 63.0f;
     viewHalfRangeSemitones = 18.0f;
     notifySelectionChanged();
@@ -3470,9 +3470,9 @@ void PitchTraceComponent::filesDropped(const juce::StringArray& files, int, int)
     if (reader == nullptr || reader->lengthInSamples <= 0)
         return;
 
-    const int maxSamples = static_cast<int>(juce::jmin<int64_t>(reader->lengthInSamples,
+    const int maxSamples = static_cast<int>(std::min<int64_t>(reader->lengthInSamples,
                                                                 static_cast<int64_t>(reader->sampleRate * 45.0)));
-    juce::AudioBuffer<float> fileBuf(static_cast<int>(juce::jmin<unsigned int>(2u, reader->numChannels)), maxSamples);
+    juce::AudioBuffer<float> fileBuf(static_cast<int>(std::min<unsigned int>(2u, reader->numChannels)), maxSamples);
     reader->read(&fileBuf, 0, maxSamples, 0, true, true);
     analyzeAudioBufferIntoNotes(fileBuf, reader->sampleRate);
 }
@@ -3798,7 +3798,7 @@ void PitchTraceComponent::analyzeAudioBufferIntoNotes(const juce::AudioBuffer<fl
         viewCentreMidiNote = juce::jlimit(36.0f, 84.0f, static_cast<float>(midiSum / midiCount));
 
     viewStartHop = 0.0f;
-    visibleHopsCount = static_cast<float>(juce::jlimit<size_t>(80, 320, timeline.size() + 8));
+    visibleHopsCount = static_cast<float>(std::clamp<size_t>(timeline.size() + 8, 80, 320));
     notifySelectionChanged();
     repaint();
 }
