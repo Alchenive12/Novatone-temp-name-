@@ -601,7 +601,8 @@ namespace
         constexpr int   shortLen   = 11;     // frames (110 ms)
         constexpr int   attackLen  = 22;     // frames: ghosts born with a louder note's attack
         constexpr float shortRatio = 0.45f;
-        constexpr float floorRatio = 0.1f;  // vs the clip's loud notes (90th percentile)
+        constexpr float floorRatio = 0.1f;   // vs the clip's loud notes (90th percentile)
+        constexpr float tuneTol    = 0.40f;  // semitones off the clip's own tuning
         constexpr float ghostTol   = 0.35f;  // semitones from an exact harmonic
         const float ghostK = 0.9f * juce::jmap (settings.sensitivity, 0.0f, 1.0f, 1.3f, 0.7f);
 
@@ -669,6 +670,26 @@ namespace
                     if (hr >= 2 && hr <= 16 && std::abs (12.0f * std::log2 (h / (float) hr)) < ghostTol)
                         if (ln < ghostK * ll / std::sqrt ((float) hr))
                             drop[i] = true;
+                }
+            }
+        }
+
+        // Tuning check: real notes share the recording's tuning (one instrument / one tuning);
+        // ghosts from harmonics, body resonance and subtraction residue land off it.
+        {
+            std::vector<std::pair<float, float>> dev; // (cents offset in semitones, weight)
+            for (auto& n : notes) dev.push_back ({ n.midi - std::round (n.midi), n.level });
+            if (dev.size() >= 6)
+            {
+                std::sort (dev.begin(), dev.end());
+                float total = 0.0f; for (auto& d : dev) total += d.second;
+                float acc = 0.0f, tune = 0.0f;
+                for (auto& d : dev) { acc += d.second; if (acc >= 0.5f * total) { tune = d.first; break; } }
+                for (size_t i = 0; i < notes.size(); ++i)
+                {
+                    float off = (notes[i].midi - std::round (notes[i].midi)) - tune;
+                    off -= std::round (off); // wrap
+                    if (std::abs (off) > tuneTol) drop[i] = true;
                 }
             }
         }
