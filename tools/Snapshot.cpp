@@ -292,6 +292,12 @@ int main(int argc, char** argv)
             setP("tune_root", 2.0f); setP("tune_mode", 1.0f); // D minor for the random voice
         }
         setP("harm_source", 0.0f);
+        if (const int solo = juce::SystemStats::getEnvironmentVariable("VIDEO_SOLO", "0").getIntValue(); solo > 0)
+        {   // one harmony voice only (stems for the Choirize test)
+            setP("harm_voices", (float) juce::jmax(4, solo));
+            for (int k = 1; k <= 8; ++k) setP(("harm_v" + juce::String(k) + "_on").toRawUTF8(), k == solo ? 1.0f : 0.0f);
+            setP(("harm_v" + juce::String(solo) + "_level").toRawUTF8(), -3.0f);
+        }
 
         std::unique_ptr<juce::AudioProcessorEditor> ved(proc->createEditor());
         ved->setSize(w, h);
@@ -349,6 +355,7 @@ int main(int argc, char** argv)
                     juce::FileOutputStream os(outDir.getChildFile("export_recording.png")); os.setPosition(0); os.truncate();
                     juce::PNGImageFormat().writeImageToStream(im, os);
                 }
+                if (juce::SystemStats::getEnvironmentVariable("VIDEO_NOFRAMES", "0") == "1") continue;
                 auto img = ved->createComponentSnapshot(ved->getLocalBounds(), true, 1.0f);
                 auto f = frames.getChildFile("f" + juce::String(frameNo++).paddedLeft('0', 5) + ".png");
                 juce::FileOutputStream os(f);

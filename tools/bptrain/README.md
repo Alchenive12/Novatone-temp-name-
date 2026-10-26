@@ -45,3 +45,14 @@ Full quiet-note test at step 2250 vs stock (limit dB / halluc.): octave -8 vs -1
 12th -8 vs -4 (10% vs 0%), 2 oct 0 vs -12, 5th -20 vs -28, 3rd maj -32 = -32, min -28 vs -32. Worse overall.
 It traded hearing for fewer octave guesses. The frozen front end + small head is at its limit; more data/curriculum won't move it.
 Note: the freeze rule fired on 1-case noise (24 probe pairs = 4%/case > 2% margin); use >= 3 cases next time.
+
+## Basic Pitch inside the plugin (C++, `Source/Poly/BasicPitch.cpp`)
+Port matches onnxruntime to 4e-5 per window; whole clip ~12x faster than real time. Used as the clip analyser's prior.
+
+| setting | piano F1 | guitar agreed/36, extras | synthetic F1, octave err, extras | octave up found @0 dB (quiet-note test) |
+|---|---|---|---|---|
+| classic (no prior) | 0.54 | 32, 9 | 83%, 1055, 63 | 42% |
+| floor 0.3 + gate 0.3 | 0.65 | 30, 4 | 85%, 7, 10 | 15% (gate deletes real octaves) |
+| **floor 0.3, no gate (shipped)** | 0.61 | 30, 4 | 85%, 17, 11 | 40% |
+
+Hallucinated quiet notes 5% -> 0% with the prior. Gate kept off: an extra note is easy to delete, a deleted real note is lost.

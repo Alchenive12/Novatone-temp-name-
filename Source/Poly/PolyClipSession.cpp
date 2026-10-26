@@ -505,12 +505,13 @@ void ClipSession::run()
         {
             auto stale = [&] { const std::lock_guard<std::mutex> g (dataLock); return notesGeneration != gen || threadShouldExit(); };
             auto cancelled = [&] { return threadShouldExit() || [&] { const std::lock_guard<std::mutex> g (dataLock); return notesGeneration != gen; }(); };
-            // Learned prior: Basic Pitch (C++) weights candidate F0s and drops octave / 12th ghosts it doesn't hear.
-            // Measured (tools/bptrain/README.md): piano F1 0.54 -> 0.65, synthetic octave errors 1055 -> 7.
+            // Learned prior: Basic Pitch (C++) weights candidate F0s (floor 0.3). The octave/12th note gate stays off:
+            // it removed real octaves (quiet-note test, tools/bptrain/README.md). Piano F1 0.54 -> 0.61,
+            // synthetic octave errors 1055 -> 17, extra notes 63 -> 11, hallucinated quiet notes 5% -> 0%.
             progress.store (0.0f); triggerAsyncUpdate();
             const auto prior = basicPitchPrior (mono.getReadPointer (0), mono.getNumSamples(), clipRate.load(), cancelled);
             AnalyzerSettings settings;
-            if (prior.frames > 0) { settings.prior = &prior; settings.priorFloor = 0.3f; settings.priorNoteGate = 0.3f; }
+            if (prior.frames > 0) { settings.prior = &prior; settings.priorFloor = 0.3f; settings.priorNoteGate = 0.0f; }
             auto an = std::make_shared<Analysis> (analyse (mono.getReadPointer (0), mono.getNumSamples(), clipRate.load(), settings,
                 cancelled, [&] (float p) { progress.store (p); triggerAsyncUpdate(); }));
             if (stale()) continue;
