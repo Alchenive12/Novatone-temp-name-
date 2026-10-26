@@ -145,6 +145,7 @@ def main():
                     lv[k] = min(lv[k] + 2, 0.0); frozen[k] = True
                     print(f'== limit {k:+d} hallucinations start below {lv[k]:.0f} dB (fp {fp[k]:.2f} vs stock {fp0[k]:.2f}, extra {ex[k]:.2f} vs {ex0[k]:.2f})', flush=True)
                 elif det[k] >= 0.7 and lv[k] > -40: lv[k] -= 2
+                elif det[k] < 0.4 and lv[k] < 0: lv[k] += 2      # too hard: make it easier (two-way staircase)
             json.dump(lv, open(os.path.join(a.out, 'levels.json'), 'w'))
             bp_torch.save_onnx(head.cpu(), model, convs, os.path.join(a.out, f'model_step{step}.onnx')); head.to(dev)
         if step >= a.steps or all(frozen.values()): break
