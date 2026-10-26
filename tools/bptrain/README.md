@@ -20,3 +20,21 @@ The synthetic gain doesn't transfer and costs piano and guitar. Lower thresholds
 ## Free win instead (no training)
 Stock model, `frame_thresh` 0.30 -> 0.25: piano F1 0.605 -> 0.658 (Melodyne 0.65), right octave 93%, guitar 28 -> 30/36, extras 2.
 Next try if training again: data Basic Pitch never saw (real stems with MIDI), not more GuitarSet or synthetic.
+
+## Quiet-note test (`stair_test.py`, NSynth test set, real notes)
+Loud base note + quieter target at an interval, -4 dB per step; limit = first level heard < 50%.
+Halluc. = target pitch reported when it isn't played. Full table: `stair_stock.txt`.
+
+| interval | Basic Pitch limit | BP halluc. | NovaTone classic limit |
+|---|---|---|---|
+| octave +12 | -16 dB | 18% | 0 dB (misses even at equal level) |
+| 12th +19 | -4 dB | 0% | 0 dB |
+| 2 oct +24 | -12 dB | 8% | -4 dB |
+| 5th +7 | -28 dB | 2% | -16 dB |
+| 3rd +4 / +3 | -32 dB | 0% | -16 dB |
+| octave below -12 | below -36 dB | 0% | -24 dB |
+
+Weak spot = notes on the harmonics of the note below (octave, 12th, 2 octaves). The octave already hallucinates 18%,
+since a quiet octave on top looks like a strong 2nd harmonic.
+`train_stair.py` + `stair.bat`: staircase fine-tune on the NSynth train set. Each interval goes -2 dB when heard >= 70%
+and freezes (+2 dB back) as soon as hallucinations rise > 2 points over stock.

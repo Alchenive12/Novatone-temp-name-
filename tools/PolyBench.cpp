@@ -645,6 +645,7 @@ void runFile(const juce::String& path)
                   << "  level " << juce::String(n.level, 4) << "\n";
     }
 
+    if (std::getenv("NT_LIST_ONLY") != nullptr) return;   // stair_test: notes only, skip the renders
     auto write = [&](const juce::String& name, const juce::AudioBuffer<float>& b)
     {
         juce::File f = juce::File::getCurrentWorkingDirectory().getChildFile(name);
