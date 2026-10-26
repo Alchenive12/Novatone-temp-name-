@@ -13,10 +13,18 @@ MEL_GUITAR = [(76,27.9),(76,59.9),(71,27.9),(71,59.9)]+[(69,s) for s in (3.8,11.
    +[(50,s) for s in (15.5,25.7,47.5,57.5)]+[(49,28.7)]
 
 class Model:
+    """Full Basic Pitch ONNX, or a head-only '*.head.onnx' (train_wide.py) run on the stock front end."""
     def __init__(self, path):
         self.s = ort.InferenceSession(path, providers=['CPUExecutionProvider'])
-        self.inp = self.s.get_inputs()[0].name
+        self.inp = self.s.get_inputs()[0].name; self.front = None
+        if path.endswith('.head.onnx'):
+            import bp_torch
+            self.front = bp_torch.load(os.environ.get('NT_STOCK', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nmp_stock.onnx')))[0]
     def window(self, a):                                     # (n,N) -> note, onset, contour (n,172,*)
+        if self.front is not None:
+            import bp_torch
+            o = self.s.run(None, {self.inp: bp_torch.features(self.front, a.astype(np.float32))})
+            return o[0], o[1], o[2]                          # head export order: note, onset, contour
         o = self.s.run(None, {self.inp: a[:, :, None].astype(np.float32)})
         n88 = [x for x in o if x.shape[-1] == 88]; c = [x for x in o if x.shape[-1] == 264][0]
         return n88[1], n88[0], c                             # ONNX output order: onset, note

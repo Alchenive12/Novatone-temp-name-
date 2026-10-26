@@ -1,4 +1,5 @@
 #include "PolyClipSession.h"
+#include "BasicPitch.h"
 #include <algorithm>
 #include <cmath>
 
@@ -503,9 +504,15 @@ void ClipSession::run()
         if (doAnalysis)
         {
             auto stale = [&] { const std::lock_guard<std::mutex> g (dataLock); return notesGeneration != gen || threadShouldExit(); };
-            auto an = std::make_shared<Analysis> (analyse (mono.getReadPointer (0), mono.getNumSamples(), clipRate.load(), {},
-                [&] { return threadShouldExit() || [&] { const std::lock_guard<std::mutex> g (dataLock); return notesGeneration != gen; }(); },
-                [&] (float p) { progress.store (p); triggerAsyncUpdate(); }));
+            auto cancelled = [&] { return threadShouldExit() || [&] { const std::lock_guard<std::mutex> g (dataLock); return notesGeneration != gen; }(); };
+            // Learned prior: Basic Pitch (C++) weights candidate F0s and drops octave / 12th ghosts it doesn't hear.
+            // Measured (tools/bptrain/README.md): piano F1 0.54 -> 0.65, synthetic octave errors 1055 -> 7.
+            progress.store (0.0f); triggerAsyncUpdate();
+            const auto prior = basicPitchPrior (mono.getReadPointer (0), mono.getNumSamples(), clipRate.load(), cancelled);
+            AnalyzerSettings settings;
+            if (prior.frames > 0) { settings.prior = &prior; settings.priorFloor = 0.3f; settings.priorNoteGate = 0.3f; }
+            auto an = std::make_shared<Analysis> (analyse (mono.getReadPointer (0), mono.getNumSamples(), clipRate.load(), settings,
+                cancelled, [&] (float p) { progress.store (p); triggerAsyncUpdate(); }));
             if (stale()) continue;
 
             // Persist the clip audio (FLAC) for the project's saved state.

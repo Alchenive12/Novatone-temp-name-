@@ -75,6 +75,7 @@ target_sources(NovaTone PRIVATE
     Source/GUI/TuneTab.cpp
     Source/GUI/HarmonyTab.cpp
     Source/Poly/PolyAnalyzer.cpp
+    Source/Poly/BasicPitch.cpp
     Source/Poly/PolyRenderer.cpp
     Source/Poly/PolyClipSession.cpp)
 
@@ -127,7 +128,7 @@ option(NOVATONE_BUILD_TOOLS "Build dev benchmarks (NovaTonePolyBench)" OFF)
 if (NOVATONE_BUILD_TOOLS)
     juce_add_console_app(NovaTonePolyBench PRODUCT_NAME "NovaTonePolyBench" VERSION ${PROJECT_VERSION})
     juce_generate_juce_header(NovaTonePolyBench)
-    target_sources(NovaTonePolyBench PRIVATE tools/PolyBench.cpp Source/Poly/PolyAnalyzer.cpp Source/Poly/PolyRenderer.cpp Source/Poly/PolyClipSession.cpp
+    target_sources(NovaTonePolyBench PRIVATE tools/PolyBench.cpp Source/Poly/PolyAnalyzer.cpp Source/Poly/BasicPitch.cpp Source/Poly/PolyRenderer.cpp Source/Poly/PolyClipSession.cpp
         Source/DSP/SignalsmithShifter.cpp
         Source/DSP/LookaheadBuffer.cpp Source/DSP/MPMDetector.cpp Source/DSP/Quantizer.cpp
         Source/DSP/SmoothingFilter.cpp Source/DSP/VoicingGate.cpp)

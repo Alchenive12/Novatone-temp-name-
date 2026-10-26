@@ -48,3 +48,4 @@ Renders the editor to a PNG (on Linux run it under `xvfb-run`). Dev-only, never 
 Screenshots of the current design are in `docs/ui/`.
 
 The UI font is Inter (SIL Open Font License, see `Resources/Fonts/Inter-LICENSE.txt`).
+Chord-mode note detection uses Spotify's Basic Pitch model, ported to C++ (Apache-2.0, see `Source/Poly/BasicPitch-NOTICE.txt`).

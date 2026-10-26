@@ -5,6 +5,7 @@
 #include "DSP/TuneEngine.h"
 #include "DSP/MPMDetector.h"
 #include "Poly/PolyAnalyzer.h"
+#include "Poly/BasicPitch.h"
 #include "Poly/PolyRenderer.h"
 #include "Poly/PolyClipSession.h"
 #include "Harmony/HarmonyEngine.h"
@@ -219,6 +220,20 @@ static bool loadPrior(const juce::File& pf, Poly::PitchPrior& prior)
     return true;
 }
 
+/** NT_BP=1: learned prior from the in-plugin C++ Basic Pitch (NT_PRIOR_FLOOR / NT_PRIOR_GATE as for files). */
+static bool cppPrior(const float* x, int n, double rate, Poly::PitchPrior& prior, Poly::AnalyzerSettings& settings)
+{
+    if (juce::SystemStats::getEnvironmentVariable("NT_BP", "").isEmpty()) return false;
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    prior = Poly::basicPitchPrior(x, n, rate);
+    if (juce::SystemStats::getEnvironmentVariable("NT_BP_VERBOSE", "").isNotEmpty())
+        std::cout << "basic pitch: " << prior.frames << " frames in " << (juce::Time::getMillisecondCounterHiRes() - t0) * 0.001 << " s\n";
+    settings.prior = &prior;
+    settings.priorFloor = (float) juce::SystemStats::getEnvironmentVariable("NT_PRIOR_FLOOR", "1").getDoubleValue();
+    settings.priorNoteGate = (float) juce::SystemStats::getEnvironmentVariable("NT_PRIOR_GATE", "0.1").getDoubleValue();
+    return true;
+}
+
 Score runClip(const Case& c, bool verbose, double& secondsTaken)
 {
     auto audio = renderCase(c);
@@ -244,6 +259,7 @@ Score runClip(const Case& c, bool verbose, double& secondsTaken)
             settings.priorNoteGate = (float) juce::SystemStats::getEnvironmentVariable("NT_PRIOR_GATE", "0.1").getDoubleValue();
         }
     }
+    cppPrior(audio.data(), (int) audio.size(), sr, prior, settings);
     const auto t0 = juce::Time::getMillisecondCounterHiRes();
     const auto an = Poly::analyse(audio.data(), (int) audio.size(), sr, settings);
     secondsTaken = (juce::Time::getMillisecondCounterHiRes() - t0) * 0.001;
@@ -624,6 +640,7 @@ void runFile(const juce::String& path)
             settings.priorNoteGate = (float) juce::SystemStats::getEnvironmentVariable("NT_PRIOR_GATE", "0.1").getDoubleValue();
         }
     }
+    cppPrior(mono.data(), (int) mono.size(), r->sampleRate, prior, settings);
     const auto an = Poly::analyse(mono.data(), (int) mono.size(), r->sampleRate, settings);
     const double took = (juce::Time::getMillisecondCounterHiRes() - t0) * 0.001;
     std::cout << "analysed " << juce::String(in.getNumSamples() / r->sampleRate, 1) << " s in " << juce::String(took, 2) << " s, "
@@ -799,6 +816,32 @@ int main(int argc, char** argv)
     const juce::String mode = argc > 1 ? argv[1] : "all";
     const juce::String only = argc > 2 ? argv[2] : "";
     const bool verbose = only.isNotEmpty();
+
+    if (mode == "bpclip")   // bpclip <wav> <out.f32>: whole-clip note posteriorgram (frames x 88)
+    {
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> r(fm.createReaderFor(juce::File(argv[2])));
+        juce::AudioBuffer<float> in((int) r->numChannels, (int) r->lengthInSamples); r->read(&in, 0, in.getNumSamples(), 0, true, true);
+        std::vector<float> mono((size_t) in.getNumSamples());
+        for (int i = 0; i < in.getNumSamples(); ++i) { float v = 0; for (int c = 0; c < in.getNumChannels(); ++c) v += in.getSample(c, i); mono[(size_t) i] = v / (float) in.getNumChannels(); }
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        auto p = Poly::basicPitchPrior(mono.data(), (int) mono.size(), r->sampleRate);
+        std::cout << p.frames << " frames, " << (juce::Time::getMillisecondCounterHiRes() - t0) * 0.001 << " s for " << in.getNumSamples() / r->sampleRate << " s audio\n";
+        juce::File outF{ juce::String(argv[3]) }; outF.deleteFile(); juce::FileOutputStream os{ outF };
+        os.write(p.note.data(), p.note.size() * 4);
+        return 0;
+    }
+    if (mode == "bpwin")   // bpwin <in.f32 (43844 floats @22050)> <out.f32>: note, onset (172x88), contour (172x264)
+    {
+        juce::MemoryBlock mb; juce::File(argv[2]).loadFileAsData(mb);
+        std::vector<float> note(172 * 88), onset(172 * 88), contour(172 * 264);
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        Poly::BasicPitchDetail::runWindow((const float*) mb.getData(), note.data(), onset.data(), contour.data());
+        std::cout << "window took " << (juce::Time::getMillisecondCounterHiRes() - t0) << " ms\n";
+        juce::File outF{ juce::String(argv[3]) }; outF.deleteFile(); juce::FileOutputStream os{ outF };
+        os.write(note.data(), note.size() * 4); os.write(onset.data(), onset.size() * 4); os.write(contour.data(), contour.size() * 4);
+        return 0;
+    }
 
     if (mode == "live" || mode == "all")
     {
