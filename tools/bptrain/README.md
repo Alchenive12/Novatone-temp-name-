@@ -38,3 +38,10 @@ Weak spot = notes on the harmonics of the note below (octave, 12th, 2 octaves). 
 since a quiet octave on top looks like a strong 2nd harmonic.
 `train_stair.py` + `stair.bat`: staircase fine-tune on the NSynth train set. Each interval goes -2 dB when heard >= 70%
 and freezes (+2 dB back) as soon as hallucinations rise > 2 points over stock.
+
+## Staircase run result (2026-10-26): no ship, stopped at step ~2500
+Two-way staircase, NSynth train set (206k real notes). Detection on the probe stayed flat (~0.5 at stock-limit levels).
+Full quiet-note test at step 2250 vs stock (limit dB / halluc.): octave -8 vs -16 (halluc. 5% vs 18%),
+12th -8 vs -4 (10% vs 0%), 2 oct 0 vs -12, 5th -20 vs -28, 3rd maj -32 = -32, min -28 vs -32. Worse overall.
+It traded hearing for fewer octave guesses. The frozen front end + small head is at its limit; more data/curriculum won't move it.
+Note: the freeze rule fired on 1-case noise (24 probe pairs = 4%/case > 2% margin); use >= 3 cases next time.
