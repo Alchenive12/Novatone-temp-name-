@@ -14,3 +14,4 @@ tools/polytest/harmony_example.wav
 tools/polytest/guitar/nt.txt
 tools/polytest/mono/*.wav
 tools/polytest/mono/*.npy
+__pycache__/
