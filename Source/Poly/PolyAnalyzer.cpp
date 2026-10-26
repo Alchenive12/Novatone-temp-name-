@@ -452,7 +452,7 @@ namespace
         {
             const int f = t.start + i;
             bool nearOnset = false;
-            for (int k = f - 2; k <= f + 2; ++k)
+            for (int k = f - 3; k <= f + 2; ++k)
                 if (k >= 0 && k < (int) onsets.size() && onsets[(size_t) k]) nearOnset = true;
             if (! nearOnset) continue;
 
@@ -562,8 +562,14 @@ namespace
                 const bool samePitch = std::abs (n.midi - p.midi) < 0.5f;
                 // A re-strike brings the level back up towards the note's own peak; beating
                 // between strings or a neighbour's attack only wobbles the decaying tail.
+                const bool died = tailLevel (p) < 0.15f * peakLevel (p);
                 const bool reAttack = gap >= 0 && onsetNear (n.startFrame)
-                                      && headLevel (n) > 2.5f * tailLevel (p) && headLevel (n) > 0.8f * peakLevel (p);
+                                      && ((headLevel (n) > 2.5f * tailLevel (p) && headLevel (n) > 0.8f * peakLevel (p)) // back near its peak
+                                          || (died && headLevel (n) > 1.5f * tailLevel (p)));                          // or a new stab after it died
+                // residue of a decayed note (much weaker than it ever was): drop it, so it can't
+                // bridge the silence before the next stab
+                if (samePitch && gap <= maxGapFrames && ! reAttack && peakLevel (n) < 0.12f * peakLevel (p))
+                    continue;
                 if (samePitch && gap <= maxGapFrames && ! reAttack)
                 {
                     // fill the gap (held pitch, no amplitude), then append
@@ -595,6 +601,7 @@ namespace
         constexpr int   shortLen   = 11;     // frames (110 ms)
         constexpr int   attackLen  = 22;     // frames: ghosts born with a louder note's attack
         constexpr float shortRatio = 0.45f;
+        constexpr float floorRatio = 0.1f;  // vs the clip's loud notes (90th percentile)
         constexpr float ghostTol   = 0.35f;  // semitones from an exact harmonic
         const float ghostK = 0.9f * juce::jmap (settings.sensitivity, 0.0f, 1.0f, 1.3f, 0.7f);
 
@@ -636,7 +643,7 @@ namespace
                 const float ln = levelDuring (n, l), ll = levelDuring (l, n);
 
                 // Far quieter than a note sounding with it (-24 dB): residue, not a voice
-                if (ln < 0.063f * ll)
+                if (ln < 0.12f * ll)
                     drop[i] = true;
 
                 // Short weak blip next to a sustained, louder note
@@ -663,6 +670,20 @@ namespace
                         if (ln < ghostK * ll / std::sqrt ((float) hr))
                             drop[i] = true;
                 }
+            }
+        }
+
+        // Clip-wide floor: decay residue and ghosts in the gaps between notes have no louder
+        // note beside them, but are far below the clip's real notes.
+        {
+            std::vector<float> lv;
+            for (auto& n : notes) lv.push_back (n.level);
+            if (lv.size() >= 4)
+            {
+                std::sort (lv.begin(), lv.end());
+                const float loud = lv[(size_t) (0.9 * (double) (lv.size() - 1))];
+                for (size_t i = 0; i < notes.size(); ++i)
+                    if (notes[i].level < floorRatio * loud) drop[i] = true;
             }
         }
 
