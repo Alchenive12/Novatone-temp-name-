@@ -206,11 +206,45 @@ Score runLive(const Case& c)
 }
 
 /** New offline clip analyser. */
+/** Loads a learned pitch prior written by tools/bp_prior.py. */
+static bool loadPrior(const juce::File& pf, Poly::PitchPrior& prior)
+{
+    juce::MemoryBlock mb;
+    if (! pf.existsAsFile() || ! pf.loadFileAsData(mb) || mb.getSize() <= 16 || std::memcmp(mb.getData(), "NTPRIOR", 7) != 0) return false;
+    std::memcpy(&prior.frames, (const char*) mb.getData() + 8, 4);
+    std::memcpy(&prior.fps, (const char*) mb.getData() + 12, 4);
+    prior.note.resize((size_t) prior.frames * 88);
+    std::memcpy(prior.note.data(), (const char*) mb.getData() + 16, prior.note.size() * 4);
+    return true;
+}
+
 Score runClip(const Case& c, bool verbose, double& secondsTaken)
 {
     auto audio = renderCase(c);
+    // NT_BENCH_DIR: dump each case as <name>.wav; if <name>.prior exists there, analyse with it
+    Poly::PitchPrior prior;
+    Poly::AnalyzerSettings settings;
+    if (auto dir = juce::SystemStats::getEnvironmentVariable("NT_BENCH_DIR", ""); dir.isNotEmpty())
+    {
+        const auto base = juce::File(dir).getChildFile(juce::File::createLegalFileName(c.name).replaceCharacter(' ', '_'));
+        const auto wavF = base.withFileExtension("wav");
+        if (! wavF.existsAsFile())
+        {
+            juce::AudioBuffer<float> b(1, (int) audio.size());
+            b.copyFrom(0, 0, audio.data(), (int) audio.size());
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::AudioFormatWriter> w(wav.createWriterFor(new juce::FileOutputStream(wavF), sr, 1, 24, {}, 0));
+            if (w) w->writeFromAudioSampleBuffer(b, 0, b.getNumSamples());
+        }
+        if (loadPrior(base.withFileExtension("prior"), prior))
+        {
+            settings.prior = &prior;
+            settings.priorFloor = (float) juce::SystemStats::getEnvironmentVariable("NT_PRIOR_FLOOR", "1").getDoubleValue();
+            settings.priorNoteGate = (float) juce::SystemStats::getEnvironmentVariable("NT_PRIOR_GATE", "0.1").getDoubleValue();
+        }
+    }
     const auto t0 = juce::Time::getMillisecondCounterHiRes();
-    const auto an = Poly::analyse(audio.data(), (int) audio.size(), sr);
+    const auto an = Poly::analyse(audio.data(), (int) audio.size(), sr, settings);
     secondsTaken = (juce::Time::getMillisecondCounterHiRes() - t0) * 0.001;
 
     Score sc;
@@ -577,7 +611,19 @@ void runFile(const juce::String& path)
     for (int i = 0; i < in.getNumSamples(); ++i) { float v = 0; for (int c = 0; c < in.getNumChannels(); ++c) v += in.getSample(c, i); mono[(size_t) i] = v / (float) in.getNumChannels(); }
 
     const auto t0 = juce::Time::getMillisecondCounterHiRes();
-    const auto an = Poly::analyse(mono.data(), (int) mono.size(), r->sampleRate);
+    // optional learned prior: NT_PRIOR=<file from tools/bp_prior.py>, NT_PRIOR_FLOOR=0.15
+    Poly::PitchPrior prior;
+    Poly::AnalyzerSettings settings;
+    if (auto pf = juce::SystemStats::getEnvironmentVariable("NT_PRIOR", ""); pf.isNotEmpty())
+    {
+        if (loadPrior(juce::File(pf), prior))
+        {
+            settings.prior = &prior;
+            settings.priorFloor = (float) juce::SystemStats::getEnvironmentVariable("NT_PRIOR_FLOOR", "1").getDoubleValue();
+            settings.priorNoteGate = (float) juce::SystemStats::getEnvironmentVariable("NT_PRIOR_GATE", "0.1").getDoubleValue();
+        }
+    }
+    const auto an = Poly::analyse(mono.data(), (int) mono.size(), r->sampleRate, settings);
     const double took = (juce::Time::getMillisecondCounterHiRes() - t0) * 0.001;
     std::cout << "analysed " << juce::String(in.getNumSamples() / r->sampleRate, 1) << " s in " << juce::String(took, 2) << " s, "
               << an.notes.size() << " notes\n";

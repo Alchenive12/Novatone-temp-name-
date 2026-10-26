@@ -4,6 +4,8 @@
 #include <atomic>
 #include <functional>
 #include <vector>
+#include <cmath>
+#include <algorithm>
 
 /**
     Offline polyphonic analysis of a whole audio clip (Melodyne-style "clip" model).
@@ -45,12 +47,34 @@ namespace Poly
         double frameToSeconds(double f) const noexcept { return f * hopSize / sampleRate; }
     };
 
+    /** Optional learned pitch prior (e.g. a neural note posteriorgram): per-frame confidence
+        for MIDI 21..108 (88 bins). The analyser keeps its own exact pitch/timing measurement and
+        uses this only to decide which candidates are real notes. */
+    struct PitchPrior
+    {
+        int   frames = 0;
+        float fps = 86.13f;
+        std::vector<float> note;   ///< frames x 88
+        float at (double seconds, int midi) const noexcept
+        {
+            if (frames <= 0 || midi < 21 || midi > 108) return 1.0f;
+            const int f = (int) std::lround (seconds * fps);
+            float m = 0.0f;
+            for (int k = f - 1; k <= f + 1; ++k)        // +-1 frame (11.6 ms) of slack
+                if (k >= 0 && k < frames) m = std::max (m, note[(size_t) k * 88 + (size_t) (midi - 21)]);
+            return m;
+        }
+    };
+
     struct AnalyzerSettings
     {
         float minMidi      = 33.0f;   ///< A1
         float maxMidi      = 100.0f;  ///< E7 (piano / synth top lines)
         int   maxPolyphony = 10;
         float sensitivity  = 0.5f;    ///< 0 = only clear notes, 1 = catch quiet voices
+        const PitchPrior* prior = nullptr; ///< optional; not owned
+        float priorFloor   = 1.0f;    ///< frame-level weight of a candidate the prior gives ~0 (1 = off)
+        float priorNoteGate = 0.1f;   ///< note-level: octave/12th-related notes below this mean prior are ghosts
     };
 
     /** Analyses mono audio. `shouldCancel` may be polled from the analysing thread. */

@@ -56,6 +56,7 @@ namespace
         }
 
         int getWindowLength() const noexcept { return winLen; }
+        void setTime (double sec) noexcept { curTime = sec; }
 
         float getLastFlux() const noexcept { return lastFlux; }
 
@@ -293,10 +294,10 @@ namespace
                         if (peaks[(size_t) p1].rawAmp < 4.0f * fundAmp) return 0.0f;
                     }
                 }
-                return s;
+                return s * priorWeight (f0);
             }
             if (found < 2 || maxTerm > dominance * s) return 0.0f;
-            return s;
+            return s * priorWeight (f0);
         }
 
         float refineFromPartials (float f0) const noexcept
@@ -371,6 +372,14 @@ namespace
         std::vector<float> prevLog;
         float lastFlux = 0.0f;
         float dominance = 0.60f;
+        double curTime = 0.0;
+        /** Learned-prior weight for a candidate F0 (1 without a prior). */
+        float priorWeight (float f0) const noexcept
+        {
+            if (settings.prior == nullptr) return 1.0f;
+            const float p = settings.prior->at (curTime, (int) std::lround (hzToMidi (f0)));
+            return settings.priorFloor + (1.0f - settings.priorFloor) * juce::jmin (1.0f, p / 0.5f);
+        }
         float highF0 = 1000.0f, highRel = 0.5f; ///< lone-fundamental rule for high notes
         float maxWhite = 1.0f;
         std::vector<float> chosen; ///< F0s (Hz) already picked in the current frame
@@ -763,6 +772,7 @@ Analysis analyse (const float* mono, int numSamples, double sampleRate, const An
                 if (present >= 3) expected.push_back (t.lastMidi);
             }
             fa.computePeaks (mono, numSamples, f * result.hopSize);
+            fa.setTime ((double) f * result.hopSize / sampleRate);
             fa.estimate (dets, expected);
         }
         if ((f & 31) == 0)
@@ -832,6 +842,40 @@ Analysis analyse (const float* mono, int numSamples, double sampleRate, const An
 
     mergeFragments (notes, onsets, juce::roundToInt (0.35 * sampleRate / result.hopSize));
     pruneNotes (notes, settings);
+
+    // Learned prior, note level: a note the prior doesn't see that sits on an octave / 12th of
+    // another note is a harmonic or sub-harmonic ghost. Lone uncertain notes are kept.
+    if (settings.prior != nullptr && settings.priorNoteGate > 0.0f)
+    {
+        auto meanPrior = [&] (const Note& n, int midi)
+        {
+            double s = 0.0; int c = 0;
+            for (int f = n.startFrame; f < n.endFrame; f += 2)
+            {
+                s += settings.prior->at ((double) f * result.hopSize / sampleRate, midi);
+                ++c;
+            }
+            return c > 0 ? (float) (s / c) : 1.0f;
+        };
+        std::vector<bool> drop (notes.size(), false);
+        for (size_t i = 0; i < notes.size(); ++i)
+        {
+            const int mi = (int) std::lround (notes[i].midi);
+            if (meanPrior (notes[i], mi) >= settings.priorNoteGate) continue;
+            for (size_t j = 0; j < notes.size(); ++j)
+            {
+                if (j == i || drop[j]) continue;
+                const int iv = std::abs (mi - (int) std::lround (notes[j].midi));
+                const int ov = juce::jmin (notes[i].endFrame, notes[j].endFrame) - juce::jmax (notes[i].startFrame, notes[j].startFrame);
+                if ((iv == 12 || iv == 19 || iv == 24) && ov > (notes[i].endFrame - notes[i].startFrame) / 2
+                    && meanPrior (notes[j], (int) std::lround (notes[j].midi)) > meanPrior (notes[i], mi))
+                { drop[i] = true; break; }
+            }
+        }
+        std::vector<Note> kept;
+        for (size_t i = 0; i < notes.size(); ++i) if (! drop[i]) kept.push_back (std::move (notes[i]));
+        notes = std::move (kept);
+    }
     result.notes = std::move (notes);
 
     std::sort (result.notes.begin(), result.notes.end(),
