@@ -3,6 +3,7 @@
 //   NovaTonePolyBench [detect|edit|all]
 #include <JuceHeader.h>
 #include "DSP/TuneEngine.h"
+#include "DSP/MPMDetector.h"
 #include "Poly/PolyAnalyzer.h"
 #include "Poly/PolyRenderer.h"
 #include "Poly/PolyClipSession.h"
@@ -843,6 +844,27 @@ int main(int argc, char** argv)
         runSession();
     if (mode == "harmony" || mode == "all")
         runHarmony();
+    if (mode == "mono" && argc > 2)
+    {
+        // Live tuner's raw detector (MPM, same window/hop/threshold as TuneEngine) on a file:
+        // prints "time_s hz" per hop (hz 0 = unvoiced)
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> r(fm.createReaderFor(juce::File(argv[2])));
+        if (r == nullptr) return 1;
+        juce::AudioBuffer<float> in((int) r->numChannels, (int) r->lengthInSamples);
+        r->read(&in, 0, in.getNumSamples(), 0, true, true);
+        const double rate = r->sampleRate;
+        const int win = juce::nextPowerOfTwo((int) std::ceil(2.0 * rate / 60.0)), hop = juce::jmax(128, win / 8);
+        MPMDetector det; det.prepare(rate, win); det.setThresholdRatio(0.93f); det.setClarityFloor(0.0f);
+        std::vector<float> frame((size_t) win);
+        for (int s0 = 0; s0 + win <= in.getNumSamples(); s0 += hop)
+        {
+            for (int i = 0; i < win; ++i) { float v = 0; for (int c = 0; c < in.getNumChannels(); ++c) v += in.getSample(c, s0 + i); frame[(size_t) i] = v / (float) in.getNumChannels(); }
+            const auto res = det.processFrame(frame.data());
+            std::cout << juce::String((s0 + win / 2) / rate, 4) << " " << (res.isVoiced ? res.pitchHz : 0.0f) << "\n";
+        }
+        return 0;
+    }
     if (mode == "file" && argc > 2)
         runFile(argv[2]);
     if (mode == "listen")
