@@ -56,6 +56,7 @@ namespace
         }
 
         int getWindowLength() const noexcept { return winLen; }
+
         float getLastFlux() const noexcept { return lastFlux; }
 
         /** Returns the loudest raw partial amplitude of this frame (for the silence gate). */
@@ -431,6 +432,79 @@ namespace
         return on;
     }
 
+    /** Joins fragments of one held note. Decaying partials (piano, plucked strings, the tail
+        of a sung note) drop in and out of detection, so a single note arrives as several
+        same-pitch pieces with short gaps. Two pieces are joined unless the second one starts
+        with a real re-attack: a spectral onset at its start where its own level jumps above
+        the level the first piece had faded to. */
+    void mergeFragments (std::vector<Note>& notes, const std::vector<bool>& onsets, int maxGapFrames)
+    {
+        std::sort (notes.begin(), notes.end(), [] (const Note& a, const Note& b)
+        {
+            const long sa = std::lround (a.midi), sb = std::lround (b.midi);
+            return sa != sb ? sa < sb : a.startFrame < b.startFrame;
+        });
+
+        auto tailLevel = [] (const Note& n)
+        {
+            float m = 0.0f;
+            const int len = (int) n.amp.size();
+            for (int i = juce::jmax (0, len - 4); i < len; ++i) m = juce::jmax (m, n.amp[(size_t) i]);
+            return m;
+        };
+        auto peakLevel = [] (const Note& n)
+        {
+            float m = 0.0f;
+            for (float a : n.amp) m = juce::jmax (m, a);
+            return m;
+        };
+        auto headLevel = [] (const Note& n)
+        {
+            float m = 0.0f;
+            for (int i = 0; i < juce::jmin ((int) n.amp.size(), 5); ++i) m = juce::jmax (m, n.amp[(size_t) i]);
+            return m;
+        };
+        auto onsetNear = [&] (int f)
+        {
+            for (int k = f - 3; k <= f + 2; ++k)
+                if (k >= 0 && k < (int) onsets.size() && onsets[(size_t) k]) return true;
+            return false;
+        };
+
+        std::vector<Note> out;
+        for (auto& n : notes)
+        {
+            if (! out.empty())
+            {
+                auto& p = out.back();
+                const int gap = n.startFrame - p.endFrame;
+                const bool samePitch = std::abs (n.midi - p.midi) < 0.5f;
+                // A re-strike brings the level back up towards the note's own peak; beating
+                // between strings or a neighbour's attack only wobbles the decaying tail.
+                const bool reAttack = gap >= 0 && onsetNear (n.startFrame)
+                                      && headLevel (n) > 2.5f * tailLevel (p) && headLevel (n) > 0.8f * peakLevel (p);
+                if (samePitch && gap <= maxGapFrames && ! reAttack)
+                {
+                    // fill the gap (held pitch, no amplitude), then append
+                    const int from = juce::jmax (p.endFrame, n.startFrame);
+                    for (int f = p.endFrame; f < n.startFrame; ++f) { p.pitchMidi.push_back (p.pitchMidi.back()); p.amp.push_back (0.0f); }
+                    for (int f = from; f < n.endFrame; ++f)
+                    {
+                        p.pitchMidi.push_back (n.pitchMidi[(size_t) (f - n.startFrame)]);
+                        p.amp.push_back (n.amp[(size_t) (f - n.startFrame)]);
+                    }
+                    const float lp = (float) (p.endFrame - p.startFrame), ln = (float) (n.endFrame - n.startFrame);
+                    p.midi  = (p.midi * lp + n.midi * ln) / (lp + ln);
+                    p.level = (p.level * lp + n.level * ln) / (lp + ln);
+                    p.endFrame = juce::jmax (p.endFrame, n.endFrame);
+                    continue;
+                }
+            }
+            out.push_back (std::move (n));
+        }
+        notes = std::move (out);
+    }
+
     /** Note-level clean-up:
         - attack blips: very short notes that are much weaker than what's sounding around them
         - overtone ghosts: a note sitting on an integer harmonic of a louder concurrent note,
@@ -438,6 +512,7 @@ namespace
     void pruneNotes (std::vector<Note>& notes, const AnalyzerSettings& settings)
     {
         constexpr int   shortLen   = 11;     // frames (110 ms)
+        constexpr int   attackLen  = 22;     // frames: ghosts born with a louder note's attack
         constexpr float shortRatio = 0.45f;
         constexpr float ghostTol   = 0.35f;  // semitones from an exact harmonic
         const float ghostK = 0.9f * juce::jmap (settings.sensitivity, 0.0f, 1.0f, 1.3f, 0.7f);
@@ -486,6 +561,17 @@ namespace
                 // Short weak blip next to a sustained, louder note
                 if (len < shortLen && ln < shortRatio * ll)
                     drop[i] = true;
+
+                // Ghost of a louder note: a short weak note born together with it (a struck
+                // chord's transient briefly fakes extra pitches) or sitting on one of its
+                // octaves/12ths. A short note a step away (a riff over a ringing string) is kept.
+                if (len < attackLen && ln < shortRatio * ll)
+                {
+                    const int iv = (int) std::lround (n.midi - l.midi); // overtones sit above
+                    const bool harmonic = iv == 12 || iv == 19 || iv == 24 || iv == 28 || iv == 31;
+                    if (harmonic || (std::abs (n.startFrame - l.startFrame) <= 4 && l.startFrame <= n.startFrame && iv > 0))
+                        drop[i] = true;
+                }
 
                 // Overtone ghost of a lower, louder note
                 if (l.midi < n.midi - 0.5f)
@@ -621,6 +707,7 @@ Analysis analyse (const float* mono, int numSamples, double sampleRate, const An
     for (const auto& t : finished)
         segmentTrack (t, minLen, onsets, notes, nextId);
 
+    mergeFragments (notes, onsets, juce::roundToInt (0.35 * sampleRate / result.hopSize));
     pruneNotes (notes, settings);
     result.notes = std::move (notes);
 

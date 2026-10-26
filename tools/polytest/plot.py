@@ -2,7 +2,7 @@ import re, matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 from gt import GT, MEL, SIX
 exec(open('score.py').read().split('def score')[0])
 fig,axs=plt.subplots(1,2,figsize=(15,7),sharey=True,facecolor='#16181d')
-for ax,(name,det,col) in zip(axs,[("Melodyne 5 (FL Keys audio)",MEL,'#ff7a45'),("NovaTone poly (same FL Keys audio)",NT,'#36d1b5')]):
+for ax,(name,det,col) in zip(axs,[("Melodyne 5 (FL Keys audio)",MEL,'#ff7a45'),("NovaTone poly, after the fix (same FL Keys audio)",NT,'#36d1b5')]):
     ax.set_facecolor('#1e2128')
     for m,a,b in GT: ax.add_patch(plt.Rectangle((a,m-0.45),b-a,0.9,fill=False,ec='#e8e8e8',lw=1.2))
     for m,a,b in det:

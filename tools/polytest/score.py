@@ -7,7 +7,7 @@ for l in open('nt_out.txt'):
     if m: NT.append((12*(int(m.group(4))+1)+NAMES[m.group(3)], float(m.group(1))/SIX, float(m.group(2))/SIX))
 def score(name, det):
     gt=[g for g in GT if g[2]>2.0]          # Melodyne's view started at 16th 1.9: skip notes that ended before
-    det=[d for d in det if d[2]>2.0 and d[1]<64]
+    det=[d for d in det if d[2]>2.0 and d[1]<63]   # notes starting on bar 5's downbeat belong to bar 5
     used=set(); hits=[]; octv=0
     for g in gt:
         best=None
