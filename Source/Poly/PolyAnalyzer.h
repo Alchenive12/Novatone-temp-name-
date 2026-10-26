@@ -48,7 +48,7 @@ namespace Poly
     struct AnalyzerSettings
     {
         float minMidi      = 33.0f;   ///< A1
-        float maxMidi      = 90.0f;   ///< F#6
+        float maxMidi      = 100.0f;  ///< E7 (piano / synth top lines)
         int   maxPolyphony = 10;
         float sensitivity  = 0.5f;    ///< 0 = only clear notes, 1 = catch quiet voices
     };

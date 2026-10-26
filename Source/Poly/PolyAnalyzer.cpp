@@ -134,6 +134,8 @@ namespace
                 p.white = p.rawAmp * std::pow (sigma, nu - 1.0f);
                 p.resid = p.white;
             }
+            maxWhite = 1.0e-12f;
+            for (auto& p : peaks) maxWhite = juce::jmax (maxWhite, p.white);
             return frameMax;
         }
 
@@ -142,6 +144,7 @@ namespace
         void estimate (std::vector<FrameF0>& out, const std::vector<float>& /*expected*/)
         {
             out.clear();
+            chosen.clear();
             if (peaks.empty()) return;
 
             float sumS = 0.0f, prevScore = 0.0f, firstS = 0.0f;
@@ -181,7 +184,32 @@ namespace
                 f0.salience = bestS;
                 f0.amp = subtract (bestF);
                 out.push_back (f0);
+                chosen.push_back (bestF);
             }
+
+            // Second pass: high notes that are almost pure fundamentals (piano top line, bells,
+            // synth leads). Only peaks the full-harmonic search left unexplained, and never on a
+            // harmonic of a note found above.
+            allowLone = true;
+            for (int extra = 0; extra < 3 && (int) out.size() < settings.maxPolyphony; ++extra)
+            {
+                float bestS = 0.0f, bestF = 0.0f;
+                for (float f : grid)
+                {
+                    if (f < highF0) continue;
+                    const float sv = salience (f);
+                    if (sv > bestS) { bestS = sv; bestF = f; }
+                }
+                if (bestS <= 0.0f) break;
+                bestF = refineFromPartials (bestF);
+                FrameF0 f0;
+                f0.midi = hzToMidi (bestF);
+                f0.salience = juce::jmax (bestS, firstS * relFloor);
+                f0.amp = subtractLone (bestF);
+                out.push_back (f0);
+                chosen.push_back (bestF);
+            }
+            allowLone = false;
         }
 
     private:
@@ -233,6 +261,40 @@ namespace
             // A real pitched note shows at least two of its first four partials, and its
             // evidence isn't concentrated in one partial (a formant-boosted overtone of
             // another voice is).
+            // Exception: high notes (piano / bells / synth leads above ~1 kHz) are nearly pure
+            // fundamentals, their upper partials weak or above the band. There, a strong
+            // fundamental that the iterative search hasn't explained yet counts on its own.
+            if (f0 >= highF0 && allowLone)
+            {
+                // judged on the peak's full strength: lower notes' harmonic subtraction may
+                // already have eaten into it (the check below decides whether it's theirs)
+                const int p1 = matchPeak (f0, false);
+                if (p1 < 0 || peaks[(size_t) p1].white < highRel * maxWhite) return 0.0f;
+                for (float c : chosen)
+                    if (std::abs (12.0f * std::log2 (f0 / c)) < 0.5f) return 0.0f; // already a note
+                // isolated: a voice's or bright instrument's harmonic sits in a dense comb of
+                // similar peaks; a high piano/bell note towers over its neighbours
+                for (size_t q = 0; q < peaks.size(); ++q)
+                    if ((int) q != p1 && std::abs (peaks[q].hz / peaks[(size_t) p1].hz - 1.0f) < 0.16f
+                        && peaks[q].rawAmp > 0.5f * peaks[(size_t) p1].rawAmp)
+                        return 0.0f;
+                // ...unless it sits on a harmonic of a note already found in this frame (a bright
+                // instrument's upper partial the smoothness subtraction left behind)
+                for (float c : chosen)
+                {
+                    const float r = f0 / c;
+                    const float h = std::round (r);
+                    if (h >= 2.0f && std::abs (r - h) < 0.022f * h)
+                    {
+                        // a partial far louder than its supposed fundamental is a note of its own
+                        // (piano melody doubling a chord tone two octaves up)
+                        const int pc = matchPeak (c, false);
+                        const float fundAmp = pc >= 0 ? peaks[(size_t) pc].rawAmp : 0.0f;
+                        if (peaks[(size_t) p1].rawAmp < 4.0f * fundAmp) return 0.0f;
+                    }
+                }
+                return s;
+            }
             if (found < 2 || maxTerm > dominance * s) return 0.0f;
             return s;
         }
@@ -250,6 +312,21 @@ namespace
                 den += w;
             }
             return den > 0.0 ? (float) (num / den) : f0;
+        }
+
+        /** Lone high note: its level is its whole fundamental peak (plus a weak 2nd partial),
+            which it now fully explains. */
+        float subtractLone (float f0)
+        {
+            float e = 0.0f;
+            for (int m = 1; m <= 2; ++m)
+            {
+                const int p = matchPeak (f0 * (float) m, false);
+                if (p < 0) continue;
+                e += peaks[(size_t) p].rawAmp * peaks[(size_t) p].rawAmp;
+                peaks[(size_t) p].resid = 0.0f;
+            }
+            return std::sqrt (e);
         }
 
         /** Removes the chosen F0's partials from the residual (spectral smoothness) and
@@ -294,6 +371,10 @@ namespace
         std::vector<float> prevLog;
         float lastFlux = 0.0f;
         float dominance = 0.60f;
+        float highF0 = 1000.0f, highRel = 0.5f; ///< lone-fundamental rule for high notes
+        float maxWhite = 1.0f;
+        std::vector<float> chosen; ///< F0s (Hz) already picked in the current frame
+        bool allowLone = false;    ///< second pass: lone high fundamentals
     };
 
     //==========================================================================
