@@ -334,6 +334,8 @@ void NovaToneAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
     polyClip.prepare(sampleRate, samplesPerBlock, (int)spec.numChannels);
     harmony.prepare(sampleRate, samplesPerBlock);
     harmonyExporter.prepare(sampleRate, samplesPerBlock);
+    choirRecorder.prepare(sampleRate, samplesPerBlock);
+    choir.prepare(sampleRate, samplesPerBlock);
     harmonyDry.setSize((int)spec.numChannels, samplesPerBlock);
     alterEngine.prepare(spec);
     lastPublishedHopIndex = 0;
@@ -630,7 +632,10 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
     if (polyMode)
         polyClip.playback(buffer, hostSample, hostPlaying, getLatencySamples());
 
-    if (harmonyOn && harmonyDry.getNumSamples() >= buffer.getNumSamples())
+    // Choir playing (and not recording new parts): the AI choir replaces the live harmonies
+    const auto recState = choirRecorder.getState();
+    const bool choirRecording = recState == HarmonyExporter::State::armed || recState == HarmonyExporter::State::recording;
+    if (harmonyOn && ! (choir.enabled.load(std::memory_order_relaxed) && ! choirRecording) && harmonyDry.getNumSamples() >= buffer.getNumSamples())
     {
         harmony.setHumanize(loadP(harmHumanizeParam, 0.4f));
         harmony.setHarmonyGainDb(loadP(harmMixParam, 0.0f));
@@ -643,9 +648,16 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
         juce::AudioBuffer<float> dryView(harmonyDry.getArrayOfWritePointers(), juce::jmin(harmonyDry.getNumChannels(), buffer.getNumChannels()), buffer.getNumSamples());
         harmony.process(dryView, buffer);
         harmonyExporter.push(harmony.getHarmonyOutL(), harmony.getHarmonyOutR(), buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
+        const float* stems[9] = { harmony.getLeadStem() };
+        for (int v = 0; v < HarmonyEngine::numVoices; ++v) stems[v + 1] = harmony.getVoiceStem(v);
+        choirRecorder.push(stems, buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
     }
     else
+    {
         harmonyExporter.push(nullptr, nullptr, buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
+        choirRecorder.push(static_cast<const float* const*>(nullptr), buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
+    }
+    choir.render(buffer.getWritePointer(0), buffer.getWritePointer(juce::jmin(1, buffer.getNumChannels() - 1)), buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
 
     outputGain.process(context);
     publishPeaks(block, outputPeak);
@@ -733,6 +745,8 @@ void NovaToneAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     state.removeChild(state.getChildWithName("PolyClip"), nullptr);
     if (auto clipTree = polyClip.toValueTree(); clipTree.isValid() && clipTree.hasProperty("file"))
         state.appendChild(clipTree, nullptr);
+    state.setProperty("choirFolder", choir.isOpen() ? choir.getFolder().getFullPathName() : juce::String(), nullptr);
+    choir.saveMix();
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     if (xml != nullptr) copyXmlToBinary(*xml, destData);
 }
@@ -745,7 +759,12 @@ void NovaToneAudioProcessor::setStateInformation(const void* data, int sizeInByt
         auto tree = juce::ValueTree::fromXml(*xml);
         const auto clipTree = tree.getChildWithName("PolyClip").createCopy();
         tree.removeChild(tree.getChildWithName("PolyClip"), nullptr);
+        const auto choirFolder = tree.getProperty("choirFolder").toString();
         applyStateGuarded(tree);
+        juce::MessageManager::callAsync([this, choirFolder, alive = juce::WeakReference<NovaToneAudioProcessor>(this)]
+        {
+            if (alive != nullptr && choirFolder.isNotEmpty()) choir.open(juce::File(choirFolder));
+        });
         if (clipTree.isValid())
             polyClip.fromValueTree(clipTree);
         else

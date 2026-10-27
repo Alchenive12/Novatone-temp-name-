@@ -17,6 +17,7 @@
 #include "Poly/PolyClipSession.h"
 #include "Harmony/HarmonyEngine.h"
 #include "Harmony/HarmonyExporter.h"
+#include "Choir/ChoirSession.h"
 
 /**
     Standalone "NovaTone" Vocal Pitch, Time & Formant AudioProcessor.
@@ -86,6 +87,8 @@ public:
 
     /** Records the harmony voices only (no lead) to a WAV while the host plays. */
     HarmonyExporter& getHarmonyExporter() noexcept { return harmonyExporter; }
+    HarmonyExporter& getChoirRecorder() noexcept { return choirRecorder; }
+    ChoirSession& getChoir() noexcept { return choir; }
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -173,6 +176,8 @@ private:
     HarmonyEngine harmony;
     std::array<bool, 128> midiHeld {};
     HarmonyExporter harmonyExporter;
+    HarmonyExporter choirRecorder { 9 };   // lead + 8 harmony voices, for Choir
+    ChoirSession choir;
     juce::AudioBuffer<float> harmonyDry;
     std::atomic<bool> sidechainConnected { false };
     struct HarmonyVoiceParams { std::atomic<float>* on = nullptr; std::atomic<float>* mode = nullptr; std::atomic<float>* level = nullptr; std::atomic<float>* pan = nullptr; std::atomic<float>* formant = nullptr; };
@@ -182,6 +187,7 @@ private:
     std::atomic<float>* harmHumanizeParam = nullptr;
     std::atomic<float>* harmSourceParam = nullptr;
 
+    JUCE_DECLARE_WEAK_REFERENCEABLE(NovaToneAudioProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NovaToneAudioProcessor)
 };
 

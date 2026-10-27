@@ -60,6 +60,7 @@ public:
             v.shifter.prepare (monoSpec);
             v.buffer.setSize (1, maxBlockSize);
             v.humanDelay.assign ((size_t) juce::nextPowerOfTwo ((int) (sampleRate * 0.05)), 0.0f);
+            v.out.assign ((size_t) maxBlockSize, 0.0f);
         }
         shifterLatency = voices[0].shifter.getLatencySamples();
 
@@ -68,6 +69,9 @@ public:
         preRing.assign ((size_t) maxDelay, 0.0f);
         postRing[0].assign ((size_t) maxDelay, 0.0f);
         postRing[1].assign ((size_t) maxDelay, 0.0f);
+        for (auto& v : voices) v.postRing.assign ((size_t) maxDelay, 0.0f);
+        leadRing.assign ((size_t) maxDelay, 0.0f);
+        leadOut.assign ((size_t) maxBlockSize, 0.0f);
         mixL.assign ((size_t) maxBlockSize, 0.0f);
         mixR.assign ((size_t) maxBlockSize, 0.0f);
         monoIn.assign ((size_t) maxBlockSize, 0.0f);
@@ -84,8 +88,10 @@ public:
         std::fill (detRing.begin(), detRing.end(), 0.0f);
         std::fill (preRing.begin(), preRing.end(), 0.0f);
         for (auto& r : postRing) std::fill (r.begin(), r.end(), 0.0f);
+        std::fill (leadRing.begin(), leadRing.end(), 0.0f);
         for (auto& v : voices)
         {
+            std::fill (v.postRing.begin(), v.postRing.end(), 0.0f);
             v.shifter.reset();
             std::fill (v.humanDelay.begin(), v.humanDelay.end(), 0.0f);
             v.shift = v.shiftTarget = 0.0f;
@@ -171,7 +177,7 @@ public:
         midiGate = gate0 + (1.0f - std::exp (-blockSec / 0.015f)) * (midiGate - gate0);
         for (auto& v : voices)
         {
-            if (! v.settings.on) { v.active = false; continue; }
+            if (! v.settings.on) { v.active = false; std::fill (v.out.begin(), v.out.begin() + n, 0.0f); continue; }
             if (! v.active) { v.shifter.reset(); v.shift = v.shiftTarget; v.active = true; }
 
             // glide ~25 ms between notes, plus slow humanize drift (+-8 cents at 100%)
@@ -200,6 +206,7 @@ public:
                 v.humanDelay[(size_t) v.humanPos] = src[i];
                 const float s = v.humanDelay[(size_t) ((v.humanPos - hd) & hMask)];
                 v.humanPos = (v.humanPos + 1) & hMask;
+                v.out[(size_t) i] = s;
                 mixL[(size_t) i] += gl * s;
                 mixR[(size_t) i] += gr * s;
             }
@@ -207,6 +214,19 @@ public:
 
         // 3. Post delay to the plugin latency, then mix with the (scaled) lead
         const int pMask = (int) postRing[0].size() - 1;
+        // stems for Choir: each voice (before level / pan) and the lead, on the same latency as the output
+        const int leadDelay = juce::jlimit (0, pMask, postDelay + shifterLatency);
+        for (int i = 0; i < n; ++i)
+        {
+            const int w = (postWrite + i) & pMask;
+            leadRing[(size_t) w] = monoIn[(size_t) i];
+            leadOut[(size_t) i] = leadRing[(size_t) ((w - leadDelay) & pMask)];
+            for (auto& v : voices)
+            {
+                v.postRing[(size_t) w] = v.out[(size_t) i];
+                v.out[(size_t) i] = v.postRing[(size_t) ((w - postDelay) & pMask)];
+            }
+        }
         for (int i = 0; i < n; ++i)
         {
             postRing[0][(size_t) postWrite] = mixL[(size_t) i];
@@ -228,6 +248,11 @@ public:
     /** Harmony voices only (no lead), latency-aligned, for the last process() block. */
     const float* getHarmonyOutL() const noexcept { return mixL.data(); }
     const float* getHarmonyOutR() const noexcept { return mixR.data(); }
+    /** Choir stems for the last block: the lead (mono, dry) and each voice (mono, before level / pan). */
+    const float* getLeadStem() const noexcept { return leadOut.data(); }
+    const float* getVoiceStem (int i) const noexcept { return voices[(size_t) i].out.data(); }
+    int getVoiceMode (int i) const noexcept { return voices[(size_t) i].settings.mode; }
+    bool isMidiMode() const noexcept { return midiMode; }
 
     //==========================================================================
     // GUI readouts (lock-free)
@@ -245,7 +270,7 @@ private:
         VoiceSettings settings;
         SignalsmithShifter shifter;
         juce::AudioBuffer<float> buffer;
-        std::vector<float> humanDelay;
+        std::vector<float> humanDelay, postRing, out;
         int humanPos = 0;
         float shift = 0.0f, shiftTarget = 0.0f;
         float humanSeed = 0.5f, driftPhase = 0.0f;
@@ -409,6 +434,7 @@ private:
     MPMDetector detector;
     std::vector<float> detRing, frame, preRing, monoIn, mixL, mixR;
     std::array<std::vector<float>, 2> postRing;
+    std::vector<float> leadRing, leadOut;
     int preWrite = 0, postWrite = 0, preDelaySamples = 0, shifterLatency = 0, totalLatency = 0;
     std::array<Voice, numVoices> voices;
     ChordTracker chords;

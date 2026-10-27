@@ -21,13 +21,15 @@ class HarmonyExporter : private juce::Timer
 public:
     enum class State { idle, armed, recording, finishing, ready, error };
 
-    HarmonyExporter() = default;
+    /** numChannels: 2 for the harmony mix, 9 for Choir stems (lead + 8 voices). */
+    explicit HarmonyExporter (int numChannels = 2) : channels (numChannels) {}
     ~HarmonyExporter() override { stopTimer(); closeWriter(); }
 
     void prepare (double sr, int maxBlock)
     {
         sampleRate.store (sr);
         zeros.assign ((size_t) juce::jmax (1, maxBlock) * 4, 0.0f);
+        ptrs.assign ((size_t) channels, nullptr);
     }
 
     static juce::File exportFolder()
@@ -40,14 +42,17 @@ public:
     // Message thread
     bool arm()
     {
+        return arm (exportFolder().getNonexistentChildFile ("Harmonies " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S"), ".wav", false));
+    }
+
+    bool arm (const juce::File& f)
+    {
         cancel();
-        auto folder = exportFolder();
-        if (! folder.createDirectory()) { setError ("Can't create " + folder.getFullPathName()); return false; }
-        auto f = folder.getNonexistentChildFile ("Harmonies " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S"), ".wav", false);
+        if (! f.getParentDirectory().createDirectory()) { setError ("Can't create " + f.getParentDirectory().getFullPathName()); return false; }
         auto stream = std::make_unique<juce::FileOutputStream> (f);
         if (! stream->openedOk()) { setError ("Can't write " + f.getFullPathName()); return false; }
         juce::WavAudioFormat wav;
-        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (stream.get(), sampleRate.load(), 2, 24, {}, 0));
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (stream.get(), sampleRate.load(), (unsigned int) channels, 24, {}, 0));
         if (w == nullptr) { setError ("Can't create the WAV writer"); return false; }
         stream.release(); // owned by the writer now
         if (! diskThread.isThreadRunning()) diskThread.startThread();
@@ -84,11 +89,20 @@ public:
     juce::File getFile() const { return file; }
     juce::String getError() const { return error; }
     double getSecondsRecorded() const noexcept { return (double) samplesWritten.load() / sampleRate.load(); }
+    juce::int64 getStartSample() const noexcept { return startSample.load(); }
+    double getSampleRate() const noexcept { return sampleRate.load(); }
     double getStartSeconds() const noexcept { return (double) startSample.load() / sampleRate.load(); }
 
     //==========================================================================
     // Audio thread. l / r = harmony-only output for this block (nullptr = silence).
     void push (const float* l, const float* r, int n, std::optional<juce::int64> hostSample, bool playing, int latency) noexcept
+    {
+        const float* ch[2] = { l, r != nullptr ? r : l };
+        push (ch, n, hostSample, playing, latency);
+    }
+
+    /** chans: `numChannels` pointers (nullptr = silence). */
+    void push (const float* const* chans, int n, std::optional<juce::int64> hostSample, bool playing, int latency) noexcept
     {
         const auto s = state.load (std::memory_order_relaxed);
         if (s != State::armed && s != State::recording) return;
@@ -111,8 +125,9 @@ public:
         skip -= off;
         const int count = n - off;
         if (count <= 0 || (size_t) n > zeros.size()) return;
-        const float* ch[2] = { l != nullptr ? l + off : zeros.data(), r != nullptr ? r + off : (l != nullptr ? l + off : zeros.data()) };
-        if (writer->write (ch, count))
+        if ((int) ptrs.size() != channels) return;
+        for (int c = 0; c < channels; ++c) ptrs[(size_t) c] = chans != nullptr && chans[c] != nullptr ? chans[c] + off : zeros.data();
+        if (writer->write (ptrs.data(), count))
             samplesWritten.fetch_add (count);
     }
 
@@ -142,7 +157,9 @@ private:
     void setError (const juce::String& e) { error = e; state.store (State::error); }
 
     std::atomic<double> sampleRate { 48000.0 };
+    const int channels;
     std::vector<float> zeros;
+    std::vector<const float*> ptrs;
     juce::TimeSliceThread diskThread { "NovaTone harmony export" };
     juce::SpinLock lock;
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> writer;
