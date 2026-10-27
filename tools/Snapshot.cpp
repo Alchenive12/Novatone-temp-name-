@@ -273,6 +273,11 @@ int main(int argc, char** argv)
             }
         }
 
+        if (const juce::File scF(juce::SystemStats::getEnvironmentVariable("VIDEO_SIDECHAIN", "")); scF.existsAsFile())
+        {   // real instrumental on the sidechain instead of the synthesised chord pad (same rate as VIDEO_VOCAL: 48 kHz)
+            std::unique_ptr<juce::AudioFormatReader> sr2(fm.createReaderFor(scF));
+            if (sr2 != nullptr) { pad.clear(); sr2->read(&pad, 0, total, (juce::int64) (startSec * sr2->sampleRate), true, true); }
+        }
         auto setP = [&](const char* id, float plain) { if (auto* p = np->apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(plain)); };
         auto layout = proc->getBusesLayout();
         if (layout.inputBuses.size() > 1) layout.inputBuses.getReference(1) = juce::AudioChannelSet::stereo();
