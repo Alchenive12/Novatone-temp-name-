@@ -56,3 +56,15 @@ Port matches onnxruntime to 4e-5 per window; whole clip ~12x faster than real ti
 | **floor 0.3, no gate (shipped)** | 0.61 | 30, 4 | 85%, 17, 11 | 40% |
 
 Hallucinated quiet notes 5% -> 0% with the prior. Gate kept off: an extra note is easy to delete, a deleted real note is lost.
+
+## From-scratch nets on the stock front end (`train_wide.py`, 2026-10-27): no ship
+20k steps each, NSynth real-note chords + GuitarSet + synthetic.
+
+| model | piano F1 | right-oct | guitar /36, extras | synth F1 | GuitarSet-05 | octave @0 dB (quiet test) |
+|---|---|---|---|---|---|---|
+| stock | 0.605 | 88% | 28, 2 | 0.624 | 0.821 | 82% |
+| 2x width | 0.657 | 81% | 31, 2 | 0.817 | 0.821 | 32% |
+| 1x width | 0.609 | 78% | 30, 3 | 0.800 | 0.824 | 35% |
+
+Our data reaches stock from scratch; 2x helps piano and quiet 3rds/5ths, but both nets learned to avoid octaves
+(same at 1x, so it's the data/labels, not the size). GuitarSet needs +0.02 to ship: neither does.
