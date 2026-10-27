@@ -254,6 +254,9 @@ private:
         return scaleMask;
     }
 
+    /** True when harmonies follow the key's scale (no sidechain chord). */
+    bool scaleOnly() const noexcept { return ! (useSidechain && chords.getChord() >= 0); }
+
     static int toneAbove (int note, uint16_t mask, int count) noexcept
     {
         int n = note;
@@ -316,10 +319,12 @@ private:
                 if (mode == maj9Colour) return pcAbove (leadNote + 2, root + 2);  // the 9th, kept at least a 3rd above
                 return toneAbove (leadNote, ChordTracker::chordMask (root, mode == sus2Voice ? ChordTracker::sus2 : ChordTracker::sus4), 1);
             }
-            case chordAbove:  return toneAbove (leadNote, tones, 1);
-            case chordAbove2: return toneAbove (leadNote, tones, 2);
-            case chordBelow:  return toneBelow (leadNote, tones, 1);
-            case chordBelow2: return toneBelow (leadNote, tones, 2);
+            // With a chord, tones = chord tones (next one up = a 3rd/4th away). Without one, tones = the whole
+            // scale, so step 2 scale notes per chord tone: a diatonic 3rd, and a 5th for the second tone.
+            case chordAbove:  return toneAbove (leadNote, tones, scaleOnly() ? 2 : 1);
+            case chordAbove2: return toneAbove (leadNote, tones, scaleOnly() ? 4 : 2);
+            case chordBelow:  return toneBelow (leadNote, tones, scaleOnly() ? 2 : 1);
+            case chordBelow2: return toneBelow (leadNote, tones, scaleOnly() ? 4 : 2);
             case octaveUp:    return leadNote + 12;
             case octaveDown:  return leadNote - 12;
             case chordRoot:

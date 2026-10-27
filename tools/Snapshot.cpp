@@ -292,6 +292,12 @@ int main(int argc, char** argv)
             setP("tune_root", 2.0f); setP("tune_mode", 1.0f); // D minor for the random voice
         }
         setP("harm_source", 0.0f);
+        if (const auto key = juce::SystemStats::getEnvironmentVariable("VIDEO_KEY", ""); key.isNotEmpty())
+        {   // "root mode": harmonies from key & scale instead of the sidechain (solo vocal, no chords)
+            setP("harm_source", 1.0f);
+            setP("tune_root", (float) key.upToFirstOccurrenceOf(" ", false, false).getIntValue());
+            setP("tune_mode", (float) key.fromFirstOccurrenceOf(" ", false, false).getIntValue());
+        }
         if (const int solo = juce::SystemStats::getEnvironmentVariable("VIDEO_SOLO", "0").getIntValue(); solo > 0)
         {   // one harmony voice only (stems for the Choirize test)
             setP("harm_voices", (float) juce::jmax(4, solo));
