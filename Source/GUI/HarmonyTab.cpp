@@ -95,7 +95,7 @@ HarmonyTab::HarmonyTab (juce::AudioProcessorValueTreeState& s, const HarmonyEngi
       mixKnob (s, "harm_mix", "Harmonies", {}, {}, "accent"),
       leadKnob (s, "harm_lead", "Lead", {}, {}, "cyan"),
       humanizeKnob (s, "harm_humanize", "Humanize", {}, {}, "mint"),
-      sourceSelector (s, "harm_source", "Chords", "Where the chords come from: the sidechain (your beat) or the Tune tab's key & scale")
+      sourceSelector (s, "harm_source", "Chords", "Where the chords come from: the sidechain (your beat), the Tune tab's key & scale, or MIDI notes you play (each voice sings one held note)")
 {
     mixKnob.setTooltipText ("Level of all harmony voices");
     leadKnob.setTooltipText ("Level of the lead vocal. All the way down = harmonies only (to print them on their own track)");
@@ -283,7 +283,8 @@ void HarmonyTab::paintChordCard (juce::Graphics& g, juce::Rectangle<int> area)
         const int root = juce::roundToInt (apvts.getRawParameterValue ("tune_root")->load());
         const int mode = juce::roundToInt (apvts.getRawParameterValue ("tune_mode")->load());
         big = juce::String (pcName (root)) + (mode == 1 ? " minor" : (mode == 2 ? " custom" : " major"));
-        if (! useSide)              sub = "Using the key & scale";
+        if (juce::roundToInt (apvts.getRawParameterValue ("harm_source")->load()) == 2) { big = "MIDI"; sub = "Voices sing your MIDI notes"; dot = mintAccent; }
+        else if (! useSide)         sub = "Using the key & scale";
         else if (! sideConnected)   { sub = "No sidechain connected: using the key"; dot = accent; }
         else if (! sideActive)      { sub = "Sidechain silent: using the key"; dot = accent; }
         else                        { sub = "Listening for chords..."; dot = cyanAccent; }

@@ -588,6 +588,14 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
         vs.formant = loadP(hp.formant, 0.0f);
         harmony.setVoice(v, vs);
     }
+    for (const auto m : midiMessages)   // held notes for the Harmony tab's MIDI mode
+    {
+        const auto msg = m.getMessage();
+        if (msg.isNoteOn()) midiHeld[(size_t) msg.getNoteNumber()] = true;
+        else if (msg.isNoteOff()) midiHeld[(size_t) msg.getNoteNumber()] = false;
+        else if (msg.isAllNotesOff() || msg.isAllSoundOff()) midiHeld.fill(false);
+    }
+    harmony.setMidiNotes(midiHeld.data());
     const bool harmonyOn = harmony.anyVoiceOn();
     if (hasSidechain)
         harmony.processSidechain(getBusBuffer(fullBuffer, true, 1));
@@ -628,6 +636,7 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
         harmony.setHarmonyGainDb(loadP(harmMixParam, 0.0f));
         harmony.setLeadGainDb(loadP(harmLeadParam, 0.0f));
         harmony.setUseSidechainChords(juce::roundToInt(loadP(harmSourceParam, 0.0f)) == 0);
+        harmony.setMidiMode(juce::roundToInt(loadP(harmSourceParam, 0.0f)) == 2);
         harmony.setScaleMask(packScaleDegreeMask());
         harmony.setKeyRoot(currentRoot());
         harmony.setTotalLatency(getLatencySamples());
@@ -844,7 +853,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::crea
         layout.add(std::make_unique<APF>("harm_lead", "Lead Level", NR(-60.0f, 6.0f, 0.1f), 0.0f, dbAttr));
         layout.add(std::make_unique<APF>("harm_humanize", "Harmony Humanize", NR(0.0f, 1.0f, 0.01f), 0.4f));
         layout.add(std::make_unique<juce::AudioParameterChoice>("harm_source", "Harmony Chords From",
-            juce::StringArray { "Sidechain (beat)", "Key & scale" }, 0));
+            juce::StringArray { "Sidechain (beat)", "Key & scale", "MIDI notes" }, 0));
     }
 
     return layout;

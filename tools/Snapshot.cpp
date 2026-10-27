@@ -303,6 +303,20 @@ int main(int argc, char** argv)
             setP("tune_root", (float) key.upToFirstOccurrenceOf(" ", false, false).getIntValue());
             setP("tune_mode", (float) key.fromFirstOccurrenceOf(" ", false, false).getIntValue());
         }
+        // MIDI mode: VIDEO_MIDI = file of lines "seconds note note ..." (song time); notes held until the next line
+        std::vector<std::pair<int, std::vector<int>>> midiChart;
+        if (const juce::File mf(juce::SystemStats::getEnvironmentVariable("VIDEO_MIDI", "")); mf.existsAsFile())
+        {
+            setP("harm_source", 2.0f);
+            for (auto line : juce::StringArray::fromLines(mf.loadFileAsString()))
+            {
+                auto tok = juce::StringArray::fromTokens(line.trim(), " ", "");
+                if (tok.size() < 1 || line.trim().startsWith("#")) continue;
+                std::vector<int> ns; for (int k = 1; k < tok.size(); ++k) ns.push_back(tok[k].getIntValue());
+                midiChart.push_back({ (int) ((tok[0].getDoubleValue() - startSec) * sr), ns });
+            }
+        }
+        size_t midiNext = 0; std::vector<int> midiOn;
         if (const int solo = juce::SystemStats::getEnvironmentVariable("VIDEO_SOLO", "0").getIntValue(); solo > 0)
         {   // one harmony voice only (stems for the Choirize test)
             setP("harm_voices", (float) juce::jmax(4, solo));
@@ -353,6 +367,15 @@ int main(int argc, char** argv)
                 big.setSample(3, i, in ? pad.getSample(1, src) : 0.0f);
             }
             playHead.pos = pos;
+            midi.clear();
+            while (midiNext < midiChart.size() && midiChart[midiNext].first < pos + block)
+            {
+                const int at = juce::jlimit(0, block - 1, midiChart[midiNext].first - pos);
+                for (int nn : midiOn) midi.addEvent(juce::MidiMessage::noteOff(1, nn), at);
+                midiOn = midiChart[midiNext].second;
+                for (int nn : midiOn) midi.addEvent(juce::MidiMessage::noteOn(1, nn, (juce::uint8) 100), at);
+                ++midiNext;
+            }
             proc->processBlock(big, midi);
             out.copyFrom(0, pos, big, 0, 0, block);
             out.copyFrom(1, pos, big, 1, 0, block);

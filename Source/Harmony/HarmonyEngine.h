@@ -106,6 +106,14 @@ public:
     void setScaleMask (uint16_t m) noexcept { scaleMask = m == 0 ? 0x0FFF : m; }
     void setKeyRoot (int pc) noexcept { keyRoot = ((pc % 12) + 12) % 12; }
     void setTotalLatency (int samples) noexcept { totalLatency = samples; }
+    /** MIDI mode: voices sing the held notes (lowest note -> first voice on), not intervals from the lead.
+        Nothing held = harmonies fade out. Notes beyond the voices are dropped; voices beyond the notes double an octave up. */
+    void setMidiMode (bool b) noexcept { midiMode = b; }
+    void setMidiNotes (const bool* held128) noexcept
+    {
+        midiCount = 0;
+        for (int k = 0; k < 128 && midiCount < numVoices; ++k) if (held128[k]) midiHeld[(size_t) midiCount++] = k;
+    }
 
     bool anyVoiceOn() const noexcept
     {
@@ -158,6 +166,9 @@ public:
         std::fill (mixL.begin(), mixL.begin() + n, 0.0f);
         std::fill (mixR.begin(), mixR.begin() + n, 0.0f);
         const float blockSec = (float) n / (float) sr;
+        const float gate0 = midiGate;   // MIDI mode: ~15 ms fade in/out with the held notes
+        midiGate = (midiMode && midiCount == 0) ? 0.0f : 1.0f;
+        midiGate = gate0 + (1.0f - std::exp (-blockSec / 0.015f)) * (midiGate - gate0);
         for (auto& v : voices)
         {
             if (! v.settings.on) { v.active = false; continue; }
@@ -176,7 +187,7 @@ public:
             auto sub = blk.getSubBlock (0, (size_t) n);
             v.shifter.process (juce::dsp::ProcessContextReplacing<float> (sub));
 
-            const float g = juce::Decibels::decibelsToGain (v.settings.levelDb) * harmonyGain;
+            const float g = juce::Decibels::decibelsToGain (v.settings.levelDb) * harmonyGain * midiGate;
             const float p = juce::jlimit (-1.0f, 1.0f, v.settings.pan);
             const float gl = g * std::cos ((p + 1.0f) * juce::MathConstants<float>::pi * 0.25f);
             const float gr = g * std::sin ((p + 1.0f) * juce::MathConstants<float>::pi * 0.25f);
@@ -359,11 +370,18 @@ private:
         if (lastLeadNote >= 0 && std::abs (leadSlow - (float) lastLeadNote) < 0.62f) leadNote = lastLeadNote; // hysteresis
         lastLeadNote = leadNote;
 
+        int onIndex = 0;
         for (auto& v : voices)
         {
             if (! v.settings.on) { v.publishedNote.store (-1); continue; }
             int t;
-            if (v.settings.mode == randomInKey)
+            if (midiMode)
+            {
+                if (midiCount == 0) { ++onIndex; continue; }   // keep the last note while fading out
+                t = midiHeld[(size_t) (onIndex % midiCount)] + 12 * (onIndex / midiCount);
+                ++onIndex;
+            }
+            else if (v.settings.mode == randomInKey)
             {
                 // a new random in-key note (a 3rd .. a 6th ABOVE the lead) for every new lead note;
                 // never below the lead, so it can't become the bottom of the stack and muddy the low end
@@ -405,5 +423,9 @@ private:
     bool useSidechain = true;
     uint16_t scaleMask = 0x0AB5;
     int keyRoot = 0;
+    bool midiMode = false;
+    int midiCount = 0;
+    std::array<int, numVoices> midiHeld {};
+    float midiGate = 1.0f;
     juce::uint32 rng = 0x2545F491u;
 };

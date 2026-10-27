@@ -171,6 +171,7 @@ private:
     Poly::ClipSession polyClip;
 
     HarmonyEngine harmony;
+    std::array<bool, 128> midiHeld {};
     HarmonyExporter harmonyExporter;
     juce::AudioBuffer<float> harmonyDry;
     std::atomic<bool> sidechainConnected { false };
