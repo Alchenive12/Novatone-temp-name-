@@ -164,6 +164,15 @@ namespace HarmonyEngineUI
             g.drawRoundedRectangle(r, 2.0f, 1.4f);
             g.fillRect(r.withTop(r.getBottom() - r.getHeight() * 0.36f).reduced(1.5f, 1.5f));
         }
+        else if (icon == "play")
+        {
+            p.addTriangle (c.x - s * 0.38f, c.y - s * 0.5f, c.x - s * 0.38f, c.y + s * 0.5f, c.x + s * 0.5f, c.y);
+            g.fillPath (p);
+        }
+        else if (icon == "stop")
+        {
+            g.fillRoundedRectangle (juce::Rectangle<float> (s * 0.9f, s * 0.9f).withCentre (c), 1.5f);
+        }
         else if (icon == "menu")
         {
             for (int i = -1; i <= 1; ++i)
@@ -659,6 +668,7 @@ void HarmonyEngineLookAndFeel::drawPillButton(juce::Graphics& g, juce::ToggleBut
     const auto role = button.getProperties()["pillRole"].toString();
     if (role == "accent") activeCol = accent;
     else if (role == "mint") activeCol = mintAccent;
+    else if (role == "rec") activeCol = juce::Colour (0xffef4444);
 
     juce::Path shape = segment.isNotEmpty() ? segmentPath(bounds, segment, corner)
                                             : [&] { juce::Path p; p.addRoundedRectangle(bounds, corner); return p; }();

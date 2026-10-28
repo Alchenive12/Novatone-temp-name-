@@ -28,6 +28,25 @@ PresetBar::PresetBar(PresetManager& manager, juce::AudioProcessorValueTreeState&
 
     themeBox.setTooltip("Switch the UI skin across Alchenive plugins (NovaTone, Harmony Engine, The Drum Master, The Conductor, AmpPire)");
     themeBox.getProperties().set("caption", "Theme");
+
+    for (auto* b : { &tuneTabButton, &harmonyTabButton, &choirTabButton })
+    {
+        b->setLookAndFeel(&laf);
+        b->setRadioGroupId(0x7ab);
+        b->setClickingTogglesState(true);
+        b->getProperties().set("pillRole", "cyan");
+        addAndMakeVisible(b);
+    }
+    tuneTabButton.getProperties().set("segment", "first");
+    harmonyTabButton.getProperties().set("segment", "middle");
+    choirTabButton.getProperties().set("segment", "last");
+    choirTabButton.setTooltip("Mix AI singers over your harmony parts while the song plays");
+    choirTabButton.onClick = [this] { if (onTabChanged) onTabChanged(2); };
+    tuneTabButton.setToggleState(true, juce::dontSendNotification);
+    tuneTabButton.setTooltip("Pitch & time editing");
+    harmonyTabButton.setTooltip("Chord-aware harmonies from your vocal, following the beat on the sidechain");
+    tuneTabButton.onClick    = [this] { if (onTabChanged) onTabChanged(0); };
+    harmonyTabButton.onClick = [this] { if (onTabChanged) onTabChanged(1); };
     themeBox.getProperties().set("ghost", true);
     presetBox.getProperties().set("caption", "Preset");
     saveButton.getProperties().set("ghost", true);
@@ -72,6 +91,9 @@ PresetBar::~PresetBar()
     themeBox.setLookAndFeel(nullptr);
     presetBox.setLookAndFeel(nullptr);
     saveButton.setLookAndFeel(nullptr);
+    tuneTabButton.setLookAndFeel(nullptr);
+    harmonyTabButton.setLookAndFeel(nullptr);
+    choirTabButton.setLookAndFeel(nullptr);
     saveAsButton.setLookAndFeel(nullptr);
 }
 
@@ -175,13 +197,14 @@ void PresetBar::paint(juce::Graphics& g)
     const float nameW = juce::GlyphArrangement::getStringWidth(g.getCurrentFont(), "NovaTone") + 2.0f;
     g.drawText("NovaTone", brand.removeFromLeft(nameW), juce::Justification::centredLeft);
 
-    brand.removeFromLeft(10.0f);
-    g.setFont(HarmonyEngineUI::font(12.0f, false));
-    if (juce::GlyphArrangement::getStringWidth(g.getCurrentFont(), "Pitch & time editor") <= brand.getWidth())
-    {
-        g.setColour(textSecondary);
-        g.drawText("Pitch & time editor", brand, juce::Justification::centredLeft, false);
-    }
+
+}
+
+void PresetBar::setActiveTab(int tab)
+{
+    tuneTabButton.setToggleState(tab == 0, juce::dontSendNotification);
+    harmonyTabButton.setToggleState(tab == 1, juce::dontSendNotification);
+    choirTabButton.setToggleState(tab == 2, juce::dontSendNotification);
 }
 
 void PresetBar::resized()
@@ -189,16 +212,23 @@ void PresetBar::resized()
     auto r = getLocalBounds().reduced(16, 10);
     themeBox.setBounds(r.removeFromRight(juce::jmin(220, r.getWidth() / 5)));
 
+    // Brand (logo + name) then the Tune | Harmony | Choir switch
+    auto tabs = r.withLeft(r.getX() + 26 + 10 + 92).withWidth(3 * 80);
+    tuneTabButton.setBounds(tabs.removeFromLeft(80));
+    harmonyTabButton.setBounds(tabs.removeFromLeft(80));
+    choirTabButton.setBounds(tabs);
+
     // Preset group is centred in the bar.
     const int groupW = 300 + 8 + 56 + 4 + 72;
     auto group = getLocalBounds().withSizeKeepingCentre(groupW, r.getHeight());
+    if (group.getX() < choirTabButton.getRight() + 16) group.setX(choirTabButton.getRight() + 16);   // never under the tabs
     presetBox.setBounds(group.removeFromLeft(300));
     group.removeFromLeft(8);
     saveButton.setBounds(group.removeFromLeft(56));
     group.removeFromLeft(4);
     saveAsButton.setBounds(group.removeFromLeft(72));
 
-    brandArea = r.withRight(presetBox.getX() - 12);
+    brandArea = r.withRight(tuneTabButton.getX() - 8);
 }
 
 //==============================================================================
@@ -378,9 +408,13 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
     presetBar(p.getPresetManager(), p.apvts, [this]
     {
         workstationView.refreshTheme();
+        harmonyView.refreshTheme();
+        choirView.refreshTheme();
         repaint();
     }),
     workstationView(p.apvts, p.getPitchTraceQueue()),
+    harmonyView(p.apvts, p.getHarmonyEngine(), p.getHarmonyExporter(), [&p] { return p.isSidechainConnected(); }, p.getChoir(), p.getChoirRecorder()),
+    choirView(p.apvts, p.getHarmonyEngine(), p.getChoirRecorder(), p.getChoir()),
     masterBar(p.apvts, p.getInputPeakMeter(), p.getOutputPeakMeter())
 {
     if (defaultLookAndFeelUsers()++ == 0)
@@ -393,8 +427,26 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
 
     addAndMakeVisible(presetBar);
     addAndMakeVisible(workstationView);
+    addChildComponent(harmonyView);
+    addChildComponent(choirView);
     addAndMakeVisible(masterBar);
+    presetBar.onTabChanged = [this](int tab)
+    {
+        activeTab = tab;
+        workstationView.setVisible(tab == 0);
+        harmonyView.setVisible(tab == 1);
+        choirView.setVisible(tab == 2);
+    };
+    choirView.onSendToTune = [this, &p](const juce::File& f, juce::int64 start, double rate)
+    {
+        if (auto* poly = p.apvts.getParameter("tune_polyphonic")) poly->setValueNotifyingHost(1.0f);
+        const double hostRate = p.getSampleRate() > 0 ? p.getSampleRate() : rate;
+        p.getPolyClip().loadFile(f, (juce::int64) std::llround((double) start * hostRate / rate));
+        presetBar.setActiveTab(0);
+        if (presetBar.onTabChanged) presetBar.onTabChanged(0);
+    };
     masterBar.setCentreComponent(&workstationView.getTunerComponent());
+    workstationView.setClipSession(&p.getPolyClip());
 
     setResizable(true, true);
     setResizeLimits(920, 700, 1920, 1200);
@@ -420,4 +472,6 @@ void NovaToneAudioProcessorEditor::resized()
     presetBar.setBounds(bounds.removeFromTop(52));
     masterBar.setBounds(bounds.removeFromBottom(48));
     workstationView.setBounds(bounds);
+    harmonyView.setBounds(bounds);
+    choirView.setBounds(bounds);
 }

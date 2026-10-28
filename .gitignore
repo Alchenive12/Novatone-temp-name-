@@ -5,3 +5,13 @@ cmake-build-*/
 .idea/
 *.user
 .DS_Store
+
+# poly test scratch output
+tools/polytest/__pycache__/
+tools/polytest/nt_out.txt
+tools/polytest/edit_*.wav
+tools/polytest/harmony_example.wav
+tools/polytest/guitar/nt.txt
+tools/polytest/mono/*.wav
+tools/polytest/mono/*.npy
+__pycache__/

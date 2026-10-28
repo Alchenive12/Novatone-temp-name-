@@ -7,6 +7,7 @@
 #include "ModuleTabs.h"
 #include "PitchTraceComponent.h"
 #include "PitchTraceQueue.h"
+#include "../Poly/PolyClipSession.h"
 
 //==============================================================================
 /**
@@ -31,6 +32,9 @@ public:
     ~TuneTab() override;
 
     void refreshTheme();
+
+    /** Connects the poly clip (record / load / edit / playback) used in Poly mode. */
+    void setClipSession (Poly::ClipSession* session);
 
     /** The live tuner readout; the editor shows it in its footer. */
     juce::Component& getTunerComponent() noexcept { return noteTriangle; }
@@ -153,6 +157,10 @@ private:
     juce::TextButton   dockViewButton;
     juce::TextButton   snapAllButton      { "Snap all" };
     juce::TextButton   fileMenuButton     { "File" };
+    juce::ToggleButton recordButton       { "Rec" };
+    juce::TextButton   clipPlayButton;
+    Poly::ClipSession* clipSession = nullptr;
+    void updateClipControls();
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> polyModeAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> midiCleanAttachment;

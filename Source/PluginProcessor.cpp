@@ -6,6 +6,7 @@ NovaToneAudioProcessor::NovaToneAudioProcessor()
 #if ! JucePlugin_IsMidiEffect
 #if ! JucePlugin_IsSynth
         .withInput("Input", juce::AudioChannelSet::stereo(), true)
+        .withInput("Sidechain", juce::AudioChannelSet::stereo(), false) // beat / instrumental for the Harmony tab
 #endif
         .withOutput("Output", juce::AudioChannelSet::stereo(), true)
 #endif
@@ -52,6 +53,17 @@ NovaToneAudioProcessor::NovaToneAudioProcessor()
     alterFormantParam = apvts.getRawParameterValue("alter_formant");
     alterMixParam     = apvts.getRawParameterValue("alter_mix");
     alterSoloWetParam = apvts.getRawParameterValue("alter_solo_wet");
+    for (int v = 0; v < HarmonyEngine::numVoices; ++v)
+    {
+        const juce::String p = "harm_v" + juce::String(v + 1) + "_";
+        harmVoiceParams[(size_t)v] = { apvts.getRawParameterValue(p + "on"), apvts.getRawParameterValue(p + "mode"),
+                                       apvts.getRawParameterValue(p + "level"), apvts.getRawParameterValue(p + "pan"),
+                                       apvts.getRawParameterValue(p + "formant") };
+    }
+    harmMixParam      = apvts.getRawParameterValue("harm_mix");
+    harmLeadParam     = apvts.getRawParameterValue("harm_lead");
+    harmHumanizeParam = apvts.getRawParameterValue("harm_humanize");
+    harmSourceParam   = apvts.getRawParameterValue("harm_source");
 
     inputGainParam    = apvts.getRawParameterValue("global_input");
     outputGainParam   = apvts.getRawParameterValue("global_output");
@@ -298,6 +310,12 @@ bool NovaToneAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) 
     if (out != juce::AudioChannelSet::mono() && out != juce::AudioChannelSet::stereo()) return false;
 #if ! JucePlugin_IsSynth
     if (out != layouts.getMainInputChannelSet()) return false;
+    if (layouts.inputBuses.size() > 1)
+    {
+        const auto side = layouts.getChannelSet(true, 1);
+        if (! side.isDisabled() && side != juce::AudioChannelSet::mono() && side != juce::AudioChannelSet::stereo())
+            return false;
+    }
 #endif
     return true;
 }
@@ -313,6 +331,12 @@ void NovaToneAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
 
     tuneEngine.setLookaheadEnabled(lookaheadRequested());
     tuneEngine.prepare(spec);
+    polyClip.prepare(sampleRate, samplesPerBlock, (int)spec.numChannels);
+    harmony.prepare(sampleRate, samplesPerBlock);
+    harmonyExporter.prepare(sampleRate, samplesPerBlock);
+    choirRecorder.prepare(sampleRate, samplesPerBlock);
+    choir.prepare(sampleRate, samplesPerBlock);
+    harmonyDry.setSize((int)spec.numChannels, samplesPerBlock);
     alterEngine.prepare(spec);
     lastPublishedHopIndex = 0;
 
@@ -368,7 +392,8 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
     const bool  midiCleanBtn = load(tuneMidiCleanParam,  0.0f) > 0.5f;
     tuneEngine.setHumanizeAmount(humanizeAmt);
     tuneEngine.setHumanizeEnabled(humanizeBtn);
-    tuneEngine.setPolyphonicEnabled(polyBtn);
+    // Poly mode is clip-based now (Poly::ClipSession); the old real-time poly path stays off.
+    tuneEngine.setPolyphonicEnabled(false);
     tuneEngine.setMidiCleanModeEnabled(midiCleanBtn);
     pitchQueue.globalHumanizeAmount.store(humanizeAmt, std::memory_order_relaxed);
     pitchQueue.globalHumanize.store(humanizeBtn,       std::memory_order_relaxed);
@@ -480,9 +505,16 @@ void NovaToneAudioProcessor::publishPeaks(const juce::dsp::AudioBlock<float>& bl
     }
 }
 
-void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
+
+    // Main bus only from here on; the sidechain (if the host connected one) feeds the Harmony tab.
+    const int mainChannels = juce::jmin(fullBuffer.getNumChannels(), juce::jmax(1, getMainBusNumOutputChannels()));
+    juce::AudioBuffer<float> buffer(fullBuffer.getArrayOfWritePointers(), mainChannels, fullBuffer.getNumSamples());
+    const bool hasSidechain = getBusCount(true) > 1 && getBus(true, 1) != nullptr && getBus(true, 1)->isEnabled()
+                              && getBus(true, 1)->getNumberOfChannels() > 0;
+    sidechainConnected.store(hasSidechain, std::memory_order_relaxed);
 
     // Upgrade #4: Parse incoming live MIDI notes for Real-Time MIDI Pitch Targeting & Ghost Notes:
     for (const auto metadata : midiMessages)
@@ -521,7 +553,7 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     pitchQueue.liveMidiTargetNote.store(lastActiveMidiNote, std::memory_order_relaxed);
     pitchQueue.liveMidiNoteMask.store(midiMask, std::memory_order_relaxed);
 
-    for (auto ch = getTotalNumInputChannels(); ch < getTotalNumOutputChannels(); ++ch)
+    for (auto ch = getMainBusNumInputChannels(); ch < mainChannels; ++ch)
         buffer.clear(ch, 0, buffer.getNumSamples());
 
     pushParametersToEngines();
@@ -532,8 +564,50 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
     inputGain.process(context);
     publishPeaks(block, inputPeak);
 
+    // Host transport (sample position + playing state) for the poly clip
+    std::optional<juce::int64> hostSample;
+    bool hostPlaying = false;
+    if (auto* ph = getPlayHead())
+        if (const auto pos = ph->getPosition())
+        {
+            hostPlaying = pos->getIsPlaying();
+            if (pos->getTimeInSamples().hasValue()) hostSample = *pos->getTimeInSamples();
+        }
+    const bool polyMode = tunePolyphonicParam != nullptr && tunePolyphonicParam->load(std::memory_order_relaxed) > 0.5f;
+    if (polyMode)
+        polyClip.capture(buffer, hostSample, hostPlaying);
+
+    // Harmony: settings, sidechain chords, and a copy of the dry lead for the voices
+    auto loadP = [](std::atomic<float>* p, float def) { return p != nullptr ? p->load(std::memory_order_relaxed) : def; };
+    for (int v = 0; v < HarmonyEngine::numVoices; ++v)
+    {
+        const auto& hp = harmVoiceParams[(size_t)v];
+        HarmonyEngine::VoiceSettings vs;
+        vs.on = loadP(hp.on, 0.0f) > 0.5f;
+        vs.mode = juce::roundToInt(loadP(hp.mode, 0.0f));
+        vs.levelDb = loadP(hp.level, -6.0f);
+        vs.pan = loadP(hp.pan, 0.0f);
+        vs.formant = loadP(hp.formant, 0.0f);
+        harmony.setVoice(v, vs);
+    }
+    for (const auto m : midiMessages)   // held notes for the Harmony tab's MIDI mode
+    {
+        const auto msg = m.getMessage();
+        if (msg.isNoteOn()) midiHeld[(size_t) msg.getNoteNumber()] = true;
+        else if (msg.isNoteOff()) midiHeld[(size_t) msg.getNoteNumber()] = false;
+        else if (msg.isAllNotesOff() || msg.isAllSoundOff()) midiHeld.fill(false);
+    }
+    harmony.setMidiNotes(midiHeld.data());
+    const bool harmonyOn = harmony.anyVoiceOn();
+    if (hasSidechain)
+        harmony.processSidechain(getBusBuffer(fullBuffer, true, 1));
+    if (harmonyOn && harmonyDry.getNumSamples() >= buffer.getNumSamples())
+        for (int ch = 0; ch < juce::jmin(harmonyDry.getNumChannels(), buffer.getNumChannels()); ++ch)
+            harmonyDry.copyFrom(ch, 0, buffer, ch, 0, buffer.getNumSamples());
+
     using Context = juce::dsp::ProcessContextReplacing<float>;
-    const bool tuneBypassed = tuneBypassParam != nullptr && tuneBypassParam->load(std::memory_order_relaxed) > 0.5f;
+    // In poly mode the live (mono) tuner is bypassed; edits come from the rendered clip.
+    const bool tuneBypassed = polyMode || (tuneBypassParam != nullptr && tuneBypassParam->load(std::memory_order_relaxed) > 0.5f);
 
     const float globalForm = alterFormantParam != nullptr ? alterFormantParam->load(std::memory_order_relaxed) : 0.0f;
     float noteForm = 0.0f;
@@ -553,6 +627,37 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
         [this](const Context& c) { tuneEngine.process(c); }, [this] { tuneEngine.reset(); });
     bypass[alterModule].process(context, tuneBypassed || !alterNeeded,
         [this](const Context& c) { alterEngine.process(c); }, [this] { alterEngine.reset(); });
+
+    // Inside the clip's range the rendered clip replaces the (latency-matched) dry signal.
+    if (polyMode)
+        polyClip.playback(buffer, hostSample, hostPlaying, getLatencySamples());
+
+    // Choir playing (and not recording new parts): the AI choir replaces the live harmonies
+    const auto recState = choirRecorder.getState();
+    const bool choirRecording = recState == HarmonyExporter::State::armed || recState == HarmonyExporter::State::recording;
+    if (harmonyOn && ! (choir.enabled.load(std::memory_order_relaxed) && ! choirRecording) && harmonyDry.getNumSamples() >= buffer.getNumSamples())
+    {
+        harmony.setHumanize(loadP(harmHumanizeParam, 0.4f));
+        harmony.setHarmonyGainDb(loadP(harmMixParam, 0.0f));
+        harmony.setLeadGainDb(loadP(harmLeadParam, 0.0f));
+        harmony.setUseSidechainChords(juce::roundToInt(loadP(harmSourceParam, 0.0f)) == 0);
+        harmony.setMidiMode(juce::roundToInt(loadP(harmSourceParam, 0.0f)) == 2);
+        harmony.setScaleMask(packScaleDegreeMask());
+        harmony.setKeyRoot(currentRoot());
+        harmony.setTotalLatency(getLatencySamples());
+        juce::AudioBuffer<float> dryView(harmonyDry.getArrayOfWritePointers(), juce::jmin(harmonyDry.getNumChannels(), buffer.getNumChannels()), buffer.getNumSamples());
+        harmony.process(dryView, buffer);
+        harmonyExporter.push(harmony.getHarmonyOutL(), harmony.getHarmonyOutR(), buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
+        const float* stems[9] = { harmony.getLeadStem() };
+        for (int v = 0; v < HarmonyEngine::numVoices; ++v) stems[v + 1] = harmony.getVoiceStem(v);
+        choirRecorder.push(stems, buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
+    }
+    else
+    {
+        harmonyExporter.push(nullptr, nullptr, buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
+        choirRecorder.push(static_cast<const float* const*>(nullptr), buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
+    }
+    choir.render(buffer.getWritePointer(0), buffer.getWritePointer(juce::jmin(1, buffer.getNumChannels() - 1)), buffer.getNumSamples(), hostSample, hostPlaying, getLatencySamples());
 
     outputGain.process(context);
     publishPeaks(block, outputPeak);
@@ -636,7 +741,12 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 
 void NovaToneAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-    const auto state = apvts.copyState();
+    auto state = apvts.copyState();
+    state.removeChild(state.getChildWithName("PolyClip"), nullptr);
+    if (auto clipTree = polyClip.toValueTree(); clipTree.isValid() && clipTree.hasProperty("file"))
+        state.appendChild(clipTree, nullptr);
+    state.setProperty("choirFolder", choir.isOpen() ? choir.getFolder().getFullPathName() : juce::String(), nullptr);
+    choir.saveMix();
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     if (xml != nullptr) copyXmlToBinary(*xml, destData);
 }
@@ -645,7 +755,21 @@ void NovaToneAudioProcessor::setStateInformation(const void* data, int sizeInByt
 {
     std::unique_ptr<juce::XmlElement> xml(getXmlFromBinary(data, sizeInBytes));
     if (xml != nullptr && xml->hasTagName(apvts.state.getType()))
-        applyStateGuarded(juce::ValueTree::fromXml(*xml));
+    {
+        auto tree = juce::ValueTree::fromXml(*xml);
+        const auto clipTree = tree.getChildWithName("PolyClip").createCopy();
+        tree.removeChild(tree.getChildWithName("PolyClip"), nullptr);
+        const auto choirFolder = tree.getProperty("choirFolder").toString();
+        applyStateGuarded(tree);
+        juce::MessageManager::callAsync([this, choirFolder, alive = juce::WeakReference<NovaToneAudioProcessor>(this)]
+        {
+            if (alive != nullptr && choirFolder.isNotEmpty()) choir.open(juce::File(choirFolder));
+        });
+        if (clipTree.isValid())
+            polyClip.fromValueTree(clipTree);
+        else
+            polyClip.clear();
+    }
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::createParameterLayout()
@@ -725,6 +849,31 @@ juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::crea
     layout.add(std::make_unique<APB>("alter_bypass", "Formant Bypass",      false));
     layout.add(std::make_unique<juce::AudioParameterChoice>("ui_theme", "UI Theme",
         juce::StringArray { "NovaTone Studio", "Harmony Engine", "The Drum Master", "The Conductor", "AmpPire Valve" }, 0));
+
+    // ---- Harmony tab ----
+    {
+        const int   defMode[] = { HarmonyEngine::chordAbove, HarmonyEngine::chordBelow, HarmonyEngine::octaveDown, HarmonyEngine::chordAbove2,
+                                  HarmonyEngine::maj7Colour, HarmonyEngine::maj9Colour, HarmonyEngine::sus4Voice, HarmonyEngine::randomInKey };
+        const float defPan[]  = { -0.45f, 0.45f, 0.0f, 0.7f, -0.7f, 0.3f, -0.25f, 0.55f };
+        static_assert(HarmonyEngine::numVoices == 8, "update the voice defaults");
+        const auto dbAttr = juce::AudioParameterFloatAttributes().withLabel("dB");
+        for (int v = 0; v < HarmonyEngine::numVoices; ++v)
+        {
+            const juce::String id = "harm_v" + juce::String(v + 1) + "_", nm = "Harmony " + juce::String(v + 1) + " ";
+            layout.add(std::make_unique<APB>(id + "on", nm + "On", false));
+            layout.add(std::make_unique<juce::AudioParameterChoice>(id + "mode", nm + "Mode", HarmonyEngine::modeNames(), defMode[v]));
+            layout.add(std::make_unique<APF>(id + "level", nm + "Level", NR(-36.0f, 6.0f, 0.1f), -6.0f, dbAttr));
+            layout.add(std::make_unique<APF>(id + "pan", nm + "Pan", NR(-1.0f, 1.0f, 0.01f), defPan[v]));
+            layout.add(std::make_unique<APF>(id + "formant", nm + "Formant", NR(-6.0f, 6.0f, 0.1f), 0.0f));
+        }
+        layout.add(std::make_unique<juce::AudioParameterInt>("harm_voices", "Harmony Voice Slots", 4, HarmonyEngine::numVoices, 4,
+            juce::AudioParameterIntAttributes().withAutomatable(false)));
+        layout.add(std::make_unique<APF>("harm_mix", "Harmony Mix", NR(-60.0f, 6.0f, 0.1f), 0.0f, dbAttr));
+        layout.add(std::make_unique<APF>("harm_lead", "Lead Level", NR(-60.0f, 6.0f, 0.1f), 0.0f, dbAttr));
+        layout.add(std::make_unique<APF>("harm_humanize", "Harmony Humanize", NR(0.0f, 1.0f, 0.01f), 0.4f));
+        layout.add(std::make_unique<juce::AudioParameterChoice>("harm_source", "Harmony Chords From",
+            juce::StringArray { "Sidechain (beat)", "Key & scale", "MIDI notes" }, 0));
+    }
 
     return layout;
 }

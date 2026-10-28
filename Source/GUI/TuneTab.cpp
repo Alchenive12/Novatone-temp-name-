@@ -318,7 +318,12 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
         const bool poly = polyModeButton.getToggleState();
         monoModeButton.setToggleState (! poly, juce::dontSendNotification);
         if (pitchTrace.isPolyphonicMode() != poly)
+        {
             pitchTrace.setPolyphonicMode (poly);
+            updateClipControls();
+            layoutBody (getBodyBounds());
+            repaint();
+        }
     };
     monoModeButton.onClick = [this]
     {
@@ -377,6 +382,30 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
 
     fileMenuButton.setTooltip ("Load audio, export MIDI or WAV, clear the piano roll");
     fileMenuButton.onClick = [this] { showFileMenu(); };
+
+    // Poly clip controls (visible in Poly mode)
+    styleChip (recordButton, "rec");
+    recordButton.setClickingTogglesState (false);
+    recordButton.setTooltip ("Record a clip: arm, then press play in your DAW. Press again to stop and analyse. Then drag notes to edit chords.");
+    recordButton.setLookAndFeel (&laf);
+    addChildComponent (recordButton);
+    recordButton.onClick = [this]
+    {
+        if (clipSession == nullptr) return;
+        if (clipSession->getStatus() == Poly::ClipSession::Status::recording) clipSession->stopRecording();
+        else clipSession->startRecording();
+        updateClipControls();
+    };
+    clipPlayButton.getProperties().set ("icon", "play");
+    clipPlayButton.setTooltip ("Play / stop the edited clip here (your DAW's transport also plays it in place)");
+    clipPlayButton.setLookAndFeel (&laf);
+    addChildComponent (clipPlayButton);
+    clipPlayButton.onClick = [this]
+    {
+        if (clipSession == nullptr) return;
+        clipSession->setPreviewPlaying (! clipSession->isPreviewPlaying());
+        updateClipControls();
+    };
 
     //--------------------------------------------------------------------------
     // Selected-note inspector
@@ -528,21 +557,52 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     updateControlStates();
 
     pitchTrace.setFrequencyRange (80.0f, 1000.0f);
+
+    // The attachments restored these toggles before their handlers existed: sync the roll now.
+    pitchTrace.setSnapToScale (snapScaleButton.getToggleState());
+    pitchTrace.setAutoScroll (autoScrollButton.getToggleState());
+    pitchTrace.setMidiCleanMode (midiCleanButton.getToggleState());
+    pitchTrace.setPolyphonicMode (polyModeButton.getToggleState());
+    monoModeButton.setToggleState (! polyModeButton.getToggleState(), juce::dontSendNotification);
 }
 
 TuneTab::~TuneTab()
 {
     for (auto* tb : { &editToolButton, &cutToolButton, &advancedToolButton, &drawToolButton, &monoModeButton, &polyModeButton,
-                      &midiCleanButton, &snapScaleButton, &autoScrollButton, &smoothButton, &lookaheadButton })
+                      &midiCleanButton, &snapScaleButton, &autoScrollButton, &smoothButton, &lookaheadButton, &recordButton })
         tb->setLookAndFeel (nullptr);
+    pitchTrace.onClipStatusChanged = nullptr;
 
     for (auto* btn : { &undoButton, &redoButton, &autoKeyButton, &levelerButton, &dockViewButton, &snapAllButton, &fileMenuButton,
-                       &semiDownButton, &semiUpButton, &resetNoteButton,
+                       &clipPlayButton, &semiDownButton, &semiUpButton, &resetNoteButton,
                        &styleNaturalButton, &stylePopButton, &styleHardButton })
         btn->setLookAndFeel (nullptr);
 
     for (auto* s : { &noteCentsSlider, &noteFormantSlider, &noteVarSlider, &noteGainSlider, &noteSibSlider, &humanizeSlider })
         s->setLookAndFeel (nullptr);
+}
+
+void TuneTab::setClipSession (Poly::ClipSession* session)
+{
+    clipSession = session;
+    pitchTrace.setClipSession (session);
+    pitchTrace.onClipStatusChanged = [this] { updateClipControls(); };
+    updateClipControls();
+    layoutBody (getBodyBounds());
+}
+
+void TuneTab::updateClipControls()
+{
+    const bool poly = polyModeButton.getToggleState() && clipSession != nullptr;
+    recordButton.setVisible (poly);
+    clipPlayButton.setVisible (poly);
+    if (clipSession == nullptr) return;
+    const auto st = clipSession->getStatus();
+    recordButton.setToggleState (st == Poly::ClipSession::Status::recording, juce::dontSendNotification);
+    recordButton.setButtonText (st == Poly::ClipSession::Status::recording ? "Stop" : "Rec");
+    clipPlayButton.setEnabled (st == Poly::ClipSession::Status::ready);
+    clipPlayButton.getProperties().set ("icon", clipSession->isPreviewPlaying() ? "stop" : "play");
+    clipPlayButton.repaint();
 }
 
 void TuneTab::refreshTheme()
@@ -644,12 +704,13 @@ void TuneTab::showFileMenu()
 {
     juce::PopupMenu menu;
     menu.setLookAndFeel (&HarmonyEngineLookAndFeel::shared());
-    menu.addItem (1, "Load audio...");
+    const bool poly = pitchTrace.isClipMode();
+    menu.addItem (1, poly ? "Load audio into poly clip..." : "Load audio...");
     menu.addSeparator();
     menu.addItem (2, "Export MIDI...");
-    menu.addItem (3, "Export WAV...", true, false);
+    menu.addItem (3, poly ? "Export edited clip (WAV)..." : "Export WAV...", true, false);
     menu.addSeparator();
-    menu.addItem (4, "Clear piano roll");
+    menu.addItem (4, poly ? "Clear poly clip" : "Clear piano roll");
 
     juce::Component::SafePointer<TuneTab> safeThis (this);
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&fileMenuButton).withMinimumWidth (180),
@@ -868,8 +929,9 @@ void TuneTab::layoutBody (juce::Rectangle<int> bounds)
     auto tb = bounds.removeFromTop (toolbarHeight);
     {
         // Widths shrink together on narrow windows so nothing gets clipped.
-        constexpr int fixedW    = 4 * 34 + (10 + 12 + 12 + 6 + 6 + 12) + (6 + 10 + 6) + 8;
-        constexpr int flexibleW = 4 * 62 + 2 * 58 + 66 + 74 + 96 + 76 + 62 + 66;
+        const bool clipCtl = recordButton.isVisible();
+        const int fixedW    = 4 * 34 + (10 + 12 + 12 + 6 + 6 + 12) + (6 + 10 + 6) + 8 + (clipCtl ? 34 + 4 + 12 : 0);
+        const int flexibleW = 4 * 62 + 2 * 58 + 66 + 74 + 96 + 76 + 62 + 66 + (clipCtl ? 66 : 0);
         const float k = juce::jlimit (0.70f, 1.0f, (float) (tb.getWidth() - fixedW) / (float) flexibleW);
         auto w = [k] (int px) { return juce::roundToInt ((float) px * k); };
 
@@ -881,6 +943,13 @@ void TuneTab::layoutBody (juce::Rectangle<int> bounds)
         monoModeButton.setBounds (tb.removeFromLeft (w (58)));
         polyModeButton.setBounds (tb.removeFromLeft (w (58)));
         tb.removeFromLeft (12);
+        if (recordButton.isVisible())
+        {
+            recordButton.setBounds (tb.removeFromLeft (w (66)));
+            tb.removeFromLeft (4);
+            clipPlayButton.setBounds (tb.removeFromLeft (34));
+            tb.removeFromLeft (12);
+        }
         snapScaleButton.setBounds (tb.removeFromLeft (w (66)));
         tb.removeFromLeft (6);
         autoScrollButton.setBounds (tb.removeFromLeft (w (74)));
