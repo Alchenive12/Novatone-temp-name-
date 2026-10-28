@@ -274,7 +274,7 @@ juce::String ChoirTab::recordText() const
     if (note.isNotEmpty()) return note;
     if (! choir.isOpen())
         return choir.getMessage().isNotEmpty() ? choir.getMessage()
-             : "No group yet: turn on Harmony voices, then Record parts. Needs the Choir helper running on this computer.";
+             : "Harmonies play live; AI singers are rendered from recorded parts. Turn on Harmony voices, then Record parts (needs the Choir helper on this computer).";
     return choir.getFolder().getFileName() + "  -  " + juce::String (choir.getNumTakes()) + (choir.getNumTakes() == 1 ? " take" : " takes");
 }
 

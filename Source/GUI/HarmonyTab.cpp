@@ -54,7 +54,7 @@ HarmonyTab::VoiceCard::VoiceCard (juce::AudioProcessorValueTreeState& s, int i, 
 
     // ---- Choirize: AI singer for this voice ----
     singer.setTooltip ("AI singer for this voice (Choirize). \xe2\x9c\x93 = range fits the part, \xe2\x97\x8f = ready (switching is instant). "
-                       "Auto picks the best fit; Off keeps your own shifted voice.");
+                       "Auto picks the best fit; Off keeps your own shifted voice. AI singers aren't heard live: they're rendered when you press Choirize.");
     singer.onChange = [this]
     {
         juce::String v = singer.getSelectedId() == 1 ? "auto" : singer.getSelectedId() == 2 ? "off" : juce::String();
@@ -168,7 +168,7 @@ void HarmonyTab::VoiceCard::paint (juce::Graphics& g)
     {
         g.setFont (HarmonyEngineUI::font (10.5f, false));
         g.setColour (textSecondary.withAlpha (0.7f));
-        g.drawText (choir.hasPart (index + 1) ? "No notes found" : "Choirize to see the notes", notesArea, juce::Justification::centred);
+        g.drawText (choir.hasPart (index + 1) ? "No notes found" : "AI singer is rendered on Choirize (not live)", notesArea, juce::Justification::centred);
         return;
     }
     std::vector<int> ms; for (auto& n : *ns) ms.push_back (n.midi);   // range without stray octave jumps
@@ -289,7 +289,7 @@ HarmonyTab::HarmonyTab (juce::AudioProcessorValueTreeState& s, const HarmonyEngi
                                "Needs the Choir helper running on this computer.");
     choirizeButton.onClick = [this] { toggleChoirize(); };
     choirOnButton.setClickingTogglesState (true);
-    choirOnButton.setTooltip ("Hear the AI singers instead of the live harmony voices");
+    choirOnButton.setTooltip ("Hear the rendered AI singers instead of the live harmony voices. They don't follow live changes: Choirize again after changing the harmonies.");
     choirOnButton.onClick = [this] { choir.enabled.store (choirOnButton.getToggleState()); };
     stemsButton.setButtonText ("Drag stems");
     stemsButton.setTooltip ("Drag every singer as its own WAV into FL Studio (drop at bar 1: each file starts at the song start). Click to open the folder.");
@@ -754,8 +754,8 @@ void HarmonyTab::paintChoirBar (juce::Graphics& g)
     if (st == S::armed)          { text = "Choirize armed - press play in FL Studio, stop when the section is done"; dot = accent; }
     else if (st == S::recording) { text = "Recording the voices  " + juce::String (choirRecorder.getSecondsRecorded(), 1) + " s"; dot = (juce::Time::getMillisecondCounter() / 400) % 2 ? accentBright : accent; }
     else if (pending > 0)        { text = "Making " + juce::String (pending) + (pending == 1 ? " singer" : " singers") + " (about 30 s each) - the Choir helper must be running"; dot = cyanAccent; }
-    else if (choir.getNumTakes() > 0) { text = "Choirized: pick singers per voice, click notes to switch AI / your voice / mute, then drag the stems"; dot = mintAccent; }
-    else text = "Choirize: pick a singer on each voice (or leave Auto), then press Choirize and play the section";
+    else if (choir.getNumTakes() > 0) { text = "Choirized (rendered, not live): swap singers, click notes for AI / your voice / mute, drag the stems. Changed the harmonies? Choirize again"; dot = mintAccent; }
+    else text = "Harmonies play live. AI singers aren't live: pick them, press Choirize and play the section to render them (about 30 s each)";
     g.setColour (dot);
     g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ (float) choirStatus.getX() + 4.0f, (float) choirStatus.getCentreY() }));
     g.setFont (HarmonyEngineUI::font (12.0f, st == S::recording));
