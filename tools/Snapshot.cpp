@@ -359,8 +359,8 @@ int main(int argc, char** argv)
         const bool testExport = juce::SystemStats::getEnvironmentVariable("VIDEO_EXPORT", "0") == "1";
         if (testExport) { setP("harm_lead", -60.0f); np->getHarmonyExporter().arm(); }
         const bool testChoir = juce::SystemStats::getEnvironmentVariable("VIDEO_CHOIR", "0") == "1";
-        const auto choirDir = outDir.getChildFile("choir");
-        if (testChoir) { choirDir.deleteRecursively(); np->getChoirRecorder().arm(choirDir.getChildFile("parts.wav")); }
+        const auto choirDir = outDir.getChildFile("choir").getChildFile("Test group").getChildFile("Take 1");
+        if (testChoir) { outDir.getChildFile("choir").deleteRecursively(); np->getChoirRecorder().arm(choirDir.getChildFile("parts.wav")); }
         playHead.pos = 0; playHead.playing = true;
         const int lat = proc->getLatencySamples();
         juce::AudioBuffer<float> out(2, total + lat + block * 4); out.clear();
@@ -447,9 +447,11 @@ int main(int argc, char** argv)
             pump(400);
             auto& rec = np->getChoirRecorder(); auto& choir = np->getChoir();
             std::cout << "choir parts state " << (int) rec.getState() << " sec " << rec.getSecondsRecorded() << "\n";
-            std::vector<int> on, regs;
-            for (int v = 1; v <= 8; ++v) if (np->apvts.getRawParameterValue("harm_v" + juce::String(v) + "_on")->load() > 0.5f) { on.push_back(v); regs.push_back(on.size() == 1 ? 2 : 0); }
-            choir.createFromRecording(choirDir, rec.getSampleRate(), rec.getStartSample(), on, regs);
+            std::vector<int> on, regs, los, his;
+            for (int v = 1; v <= 8; ++v) if (np->apvts.getRawParameterValue("harm_v" + juce::String(v) + "_on")->load() > 0.5f)
+            { on.push_back(v); regs.push_back(on.size() == 1 ? 2 : 0); los.push_back(on.size() == 1 ? 62 : 43); his.push_back(on.size() == 1 ? 70 : 55); }
+            choir.close();
+            choir.createFromRecording(choirDir, rec.getSampleRate(), rec.getStartSample(), on, regs, los, his);
             juce::AudioBuffer<float> parts;
             {
                 std::unique_ptr<juce::AudioFormatReader> pr(wav.createReaderFor(new juce::FileInputStream(choirDir.getChildFile("parts.wav")), true));
@@ -499,6 +501,18 @@ int main(int argc, char** argv)
                 float e = 0; for (int p : on) e += 2.0f * parts.getSample(p, i) * std::cos(juce::MathConstants<float>::pi * 0.25f);   // 2 singers per part
                 e += vocal.getSample(0, i);   // the lead passes through untouched while the choir plays
                 err += std::pow(rep.getSample(0, i + lat) - e, 2); ref += e * e;
+            }
+            {   // group tools: render the group mix, then move the take to another group and back
+                double gr = 0; const auto gf = choirDir.getParentDirectory().getChildFile("render.wav");
+                const auto gs = choir.renderGroup(gf, gr);
+                std::cout << "group render start " << gs << " rate " << gr << " bytes " << gf.getSize() << "\n";
+                const bool mv = choir.moveTake(0, "Moved group");
+                std::cout << "move take: " << mv << " takes left in group " << choir.getNumTakes() << "\n";
+                choir.open(ChoirSession::rootFolder().getChildFile("Moved group"));
+                std::cout << "moved group takes " << choir.getNumTakes() << " strips:";
+                for (int i = 0; i < ChoirSession::maxStrips; ++i) if (choir.strip(i).used.load()) std::cout << " " << choir.strip(i).voice;
+                std::cout << "\n";
+                ChoirSession::rootFolder().getChildFile("Moved group").deleteRecursively();
             }
             std::cout << "choir replay (lead + 2 singers per part): best lag " << bestLag << " samples, error " << juce::Decibels::gainToDecibels((float) std::sqrt(err / juce::jmax(1e-12, ref))) << " dB vs choir\n";
         }

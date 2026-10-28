@@ -69,7 +69,8 @@ namespace Poly
         // Message thread
         void startRecording();
         void stopRecording();
-        bool loadFile (const juce::File& file);
+        /** timelineStart: song position (session-rate samples) where the clip plays; 0 = song start. */
+        bool loadFile (const juce::File& file, juce::int64 timelineStart = 0);
         void clear();
         bool exportRender (const juce::File& file);
 

@@ -314,7 +314,7 @@ bool ClipSession::assembleRecording()
     return true;
 }
 
-bool ClipSession::loadFile (const juce::File& file)
+bool ClipSession::loadFile (const juce::File& file, juce::int64 timelineStart)
 {
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
@@ -348,7 +348,7 @@ bool ClipSession::loadFile (const juce::File& file)
     notesGeneration++;
     clip = std::make_shared<juce::AudioBuffer<float>> (std::move (res));
     clipRate.store (processRate);
-    clipStart.store (0);
+    clipStart.store (std::max<juce::int64> (0, timelineStart));
     clipLength.store (clip->getNumSamples());
     clipFileName = {};
     analysis.reset();

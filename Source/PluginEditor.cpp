@@ -437,6 +437,14 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
         harmonyView.setVisible(tab == 1);
         choirView.setVisible(tab == 2);
     };
+    choirView.onSendToTune = [this, &p](const juce::File& f, juce::int64 start, double rate)
+    {
+        if (auto* poly = p.apvts.getParameter("tune_polyphonic")) poly->setValueNotifyingHost(1.0f);
+        const double hostRate = p.getSampleRate() > 0 ? p.getSampleRate() : rate;
+        p.getPolyClip().loadFile(f, (juce::int64) std::llround((double) start * hostRate / rate));
+        presetBar.setActiveTab(0);
+        if (presetBar.onTabChanged) presetBar.onTabChanged(0);
+    };
     masterBar.setCentreComponent(&workstationView.getTunerComponent());
     workstationView.setClipSession(&p.getPolyClip());
 
