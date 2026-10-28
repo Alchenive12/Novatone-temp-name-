@@ -1,19 +1,9 @@
 #include "ChoirTab.h"
 #include "HarmonyEngineColours.h"
+#include "../Choir/ChoirRegister.h"
 
 namespace
 {
-    /** Default singer register for a harmony mode: 0 low male, 1 mid male, 2 mid female, 3 high female. */
-    int registerFor (int mode)
-    {
-        switch (mode)
-        {
-            case HarmonyEngine::octaveDown: case HarmonyEngine::chordRoot:  return 0;
-            case HarmonyEngine::chordBelow: case HarmonyEngine::chordBelow2: return 1;
-            case HarmonyEngine::chordAbove2: case HarmonyEngine::octaveUp: case HarmonyEngine::maj9Colour: return 3;
-            default: return 2;
-        }
-    }
     juce::String fmtTime (double sec)
     {
         const int m = (int) (sec / 60.0);
@@ -293,22 +283,13 @@ void ChoirTab::toggleRecord()
     using S = HarmonyExporter::State;
     const auto st = recorder.getState();
     if (st == S::armed || st == S::recording) { recorder.stop(); return; }
-    armParts.clear(); armRegs.clear();
-    std::vector<int> on;
+    ChoirSession::PendingArm a;
     for (int v = 1; v <= HarmonyEngine::numVoices; ++v)
-        if (auto* p = apvts.getRawParameterValue ("harm_v" + juce::String (v) + "_on"); p != nullptr && p->load() > 0.5f) on.push_back (v);
-    if (on.empty()) { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Choir", "Turn on at least one voice in the Harmony tab first."); return; }
-    for (size_t k = 0; k < on.size(); ++k)
-    {
-        armParts.push_back (on[k]);
-        // MIDI mode: lowest held note goes to the first voice on, so registers go up in voice order
-        armRegs.push_back (engine.isMidiMode() ? (int) (k * 4 / on.size()) : registerFor (engine.getVoiceMode (on[k] - 1)));
-    }
-    armLo.assign (on.size(), 0); armHi.assign (on.size(), 0);
-    choir.enabled.store (false);
-    if (! choir.isOpen()) choir.newGroup ("Group " + juce::String (ChoirSession::groupNames().size() + 1));
-    const auto dir = choir.getFolder().getNonexistentChildFile ("Take " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S"), {}, false);
-    recorder.arm (dir.getChildFile ("parts.wav"));
+        if (auto* p = apvts.getRawParameterValue ("harm_v" + juce::String (v) + "_on"); p != nullptr && p->load() > 0.5f) a.parts.push_back (v);
+    if (a.parts.empty()) { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Choir", "Turn on at least one voice in the Harmony tab first."); return; }
+    for (size_t k = 0; k < a.parts.size(); ++k)   // MIDI mode: lowest held note goes to the first voice on, so registers go up in voice order
+        a.regs.push_back (engine.isMidiMode() ? (int) (k * 4 / a.parts.size()) : choirRegisterFor (engine.getVoiceMode (a.parts[k] - 1)));
+    choir.beginArm (recorder, std::move (a));
 }
 
 void ChoirTab::openChooser()
@@ -383,19 +364,7 @@ void ChoirTab::timerCallback()
 {
     using S = HarmonyExporter::State;
     const auto st = recorder.getState();
-    if (st == S::recording)   // the notes each part sings -> its range (picks singers that fit)
-        for (size_t k = 0; k < armParts.size(); ++k)
-            if (const int n = engine.getVoiceNote (armParts[k] - 1); n > 0)
-            {
-                armLo[k] = armLo[k] == 0 ? n : juce::jmin (armLo[k], n);
-                armHi[k] = juce::jmax (armHi[k], n);
-            }
-    if (st == S::ready && lastRec != S::ready && ! armParts.empty())   // parts this tab armed
-    {
-        choir.createFromRecording (recorder.getFile().getParentDirectory(), recorder.getSampleRate(), recorder.getStartSample(), armParts, armRegs, armLo, armHi);
-        armParts.clear();
-        rebuildRows();
-    }
+    if (choir.pollArm (recorder, [this] (int part) { return engine.getVoiceNote (part - 1); })) rebuildRows();
     lastRec = st;
     recordButton.setButtonText (st == S::armed ? "Cancel" : st == S::recording ? "Stop" : "Record parts");
     int used = 0;

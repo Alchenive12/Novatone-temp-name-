@@ -6,6 +6,7 @@
 #include "ModuleTabs.h"
 #include "../Harmony/HarmonyEngine.h"
 #include "../Harmony/HarmonyExporter.h"
+#include "../Choir/ChoirSession.h"
 
 /**
     Harmony tab: chord-aware harmony voices generated from the lead vocal, following the chords
@@ -19,7 +20,8 @@ class HarmonyTab : public juce::Component, private juce::Timer
 {
 public:
     HarmonyTab (juce::AudioProcessorValueTreeState& apvts, const HarmonyEngine& engine,
-                HarmonyExporter& exporter, std::function<bool()> sidechainConnected);
+                HarmonyExporter& exporter, std::function<bool()> sidechainConnected,
+                ChoirSession& choir, HarmonyExporter& choirRecorder);
     ~HarmonyTab() override;
 
     void paint (juce::Graphics&) override;
@@ -33,10 +35,21 @@ private:
 
     struct VoiceCard : public juce::Component
     {
-        VoiceCard (juce::AudioProcessorValueTreeState& apvts, int index);
+        VoiceCard (juce::AudioProcessorValueTreeState& apvts, int index, ChoirSession& choir, const HarmonyEngine& engine);
         ~VoiceCard() override;
         void paint (juce::Graphics&) override;
         void resized() override;
+        void mouseUp (const juce::MouseEvent&) override;
+        void refreshSinger();     ///< singer menu + x2 from the latest choirized take (or the saved choice before choirizing)
+        juce::String singerKey() const;
+
+        juce::AudioProcessorValueTreeState& state;
+        ChoirSession& choir;
+        const HarmonyEngine& engine;
+        juce::ComboBox singer;
+        juce::TextButton doubleButton { juce::CharPointer_UTF8 ("\xc3\x97" "2") };
+        juce::Rectangle<int> notesArea;
+        juce::String shownKey;
 
         int index;
         int currentNote = -1;
@@ -51,13 +64,16 @@ private:
     struct FileDragButton : public juce::TextButton
     {
         std::function<juce::File()> getFile;
+        std::function<juce::StringArray()> getFiles;   ///< several files at once (stems)
         void mouseDrag (const juce::MouseEvent& e) override
         {
-            if (e.getDistanceFromDragStart() < 6 || dragging || getFile == nullptr) return;
-            const auto f = getFile();
-            if (! f.existsAsFile()) return;
+            if (e.getDistanceFromDragStart() < 6 || dragging) return;
+            juce::StringArray paths;
+            if (getFiles != nullptr) paths = getFiles();
+            else if (getFile != nullptr && getFile().existsAsFile()) paths.add (getFile().getFullPathName());
+            if (paths.isEmpty()) return;
             dragging = true;
-            juce::DragAndDropContainer::performExternalDragDropOfFiles ({ f.getFullPathName() }, false, this, [this] { dragging = false; });
+            juce::DragAndDropContainer::performExternalDragDropOfFiles (paths, false, this, [this] { dragging = false; });
         }
         void mouseUp (const juce::MouseEvent& e) override { dragging = false; juce::TextButton::mouseUp (e); }
         bool dragging = false;
@@ -65,6 +81,16 @@ private:
 
     void updateExportControls();
     void paintExportBar (juce::Graphics&);
+    void paintChoirBar (juce::Graphics&);
+    void toggleChoirize();
+    juce::StringArray exportStems();
+
+    ChoirSession& choir;
+    HarmonyExporter& choirRecorder;
+    juce::TextButton choirizeButton { "Choirize" }, choirOnButton { "Hear choir" };
+    FileDragButton stemsButton;
+    juce::Rectangle<int> choirBar, choirStatus;
+    int singerTick = 0;
 
     juce::AudioProcessorValueTreeState& apvts;
     const HarmonyEngine& engine;

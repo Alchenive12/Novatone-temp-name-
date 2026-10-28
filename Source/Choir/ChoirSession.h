@@ -7,6 +7,8 @@
 #include <atomic>
 #include <memory>
 #include <optional>
+#include "../DSP/MPMDetector.h"
+#include "../Harmony/HarmonyExporter.h"
 
 /**
     Choir: a mixer over pre-made AI singer voices, played in time with the host.
@@ -69,6 +71,9 @@ public:
         return {};
     }
 
+    enum NoteState { noteAI = 0, noteNormal, noteMuted };
+    struct NoteSeg { juce::int64 start = 0, end = 0; int midi = 0, state = noteAI; };
+
     struct Take
     {
         juce::File folder;
@@ -76,6 +81,7 @@ public:
         juce::int64 start = 0, length = 0;
         std::vector<int> parts;
         std::array<int, numParts> reg {}, lo {}, hi {};   // per part (1-based index - 1); lo/hi 0 = unknown
+        std::array<std::vector<NoteSeg>, numParts> notes;  // per part: sung notes, each AI / normal / muted
     };
 
     struct Strip
@@ -83,8 +89,9 @@ public:
         std::atomic<bool> used { false }, mute { false }, solo { false };
         std::atomic<float> levelDb { 0.0f }, pan { 0.0f };
         int take = 0, part = 1, offsetMs = 0;
+        bool normalRole = false;                                   // the part's own (un-choirized) voice, for notes set to normal
         juce::String voice = "original", pendingVoice, status;   // message thread
-        std::shared_ptr<const std::vector<float>> audio;           // swapped under `lock`
+        std::shared_ptr<const std::vector<float>> audio, env;      // swapped under `lock`; env = per-sample gain from note states
     };
 
     static juce::File rootFolder()
@@ -139,7 +146,8 @@ public:
 
     /** After the Choir tab recorded parts.wav into a take folder inside the open group: write session.json + default mix, reopen. */
     bool createFromRecording (const juce::File& takeDir, double sr, juce::int64 startSample, const std::vector<int>& onParts,
-                              const std::vector<int>& regs, const std::vector<int>& los = {}, const std::vector<int>& his = {})
+                              const std::vector<int>& regs, const std::vector<int>& los = {}, const std::vector<int>& his = {},
+                              const std::vector<juce::String>& singers = {}, const std::vector<bool>& doubles = {})
     {
         juce::DynamicObject::Ptr o = new juce::DynamicObject();
         o->setProperty ("sampleRate", sr);
@@ -155,8 +163,41 @@ public:
         o->setProperty ("parts", ps);
         takeDir.getChildFile ("session.json").replaceWithText (juce::JSON::toString (juce::var (o.get())));
         takeDir.getChildFile ("mix.json").deleteFile();
+        detectNotes (takeDir, onParts);
+        if (! singers.empty())   // from the Harmony tab: each card's singer (+ double), and the part's own voice for notes set to normal
+        {
+            Take tk; tk.folder = takeDir;
+            for (size_t k = 0; k < onParts.size(); ++k)
+            { const auto i = (size_t) onParts[k] - 1; tk.reg[i] = regs[k]; tk.lo[i] = k < los.size() ? los[k] : 0; tk.hi[i] = k < his.size() ? his[k] : 0; }
+            juce::Array<juce::var> ss;
+            auto add = [&] (int part, const juce::String& v, float pan, bool normal)
+            {
+                juce::DynamicObject::Ptr d = new juce::DynamicObject();
+                d->setProperty ("part", part); d->setProperty ("voice", v); d->setProperty ("level", 0.0f); d->setProperty ("pan", pan);
+                d->setProperty ("mute", false); d->setProperty ("solo", false); d->setProperty ("normal", normal);
+                ss.add (juce::var (d.get()));
+            };
+            for (size_t k = 0; k < onParts.size(); ++k)
+            {
+                const int part = onParts[k];
+                const auto want = k < singers.size() ? singers[k] : juce::String ("auto");
+                const float side = (k % 2 == 0 ? -1.0f : 1.0f) * 0.35f;
+                if (want != "off")
+                {
+                    const auto first = want == "auto" ? bestFit (tk, part, {}) : want;
+                    add (part, first, side, false);
+                    if (k < doubles.size() && doubles[k]) add (part, bestFit (tk, part, first), -side, false);
+                }
+                add (part, "original", side * 0.5f, true);
+            }
+            juce::DynamicObject::Ptr o2 = new juce::DynamicObject();
+            o2->setProperty ("strips", ss);
+            takeDir.getChildFile ("mix.json").replaceWithText (juce::JSON::toString (juce::var (o2.get())));
+        }
         saveMix();
-        return open (takeDir.getParentDirectory());
+        const bool ok = open (takeDir.getParentDirectory());
+        if (ok && ! singers.empty() && takes.size() == 1) balance();
+        return ok;
     }
 
     /** Opens a group folder (every take in it). A take folder opens its group. */
@@ -189,6 +230,7 @@ public:
             juce::WavAudioFormat wav;
             if (std::unique_ptr<juce::AudioFormatReader> rd (wav.createReaderFor (d.getChildFile ("parts.wav").createInputStream().release(), true)); rd != nullptr)
                 tk.length = rd->lengthInSamples;
+            loadNotes (tk);
             found.push_back (tk);
         }
         { const juce::SpinLock::ScopedLockType sl (lock); takes = std::move (found); }
@@ -199,6 +241,7 @@ public:
         if (anyNewMix && ! anyLoaded) balance();   // a fresh group gets the default balance; existing mixes are kept
         for (int i = 0; i < maxStrips; ++i)
             if (strips[(size_t) i].used.load()) { auto& s = strips[(size_t) i]; const auto v = s.voice; s.voice = {}; setVoice (i, v); }
+        rebuildAllEnvs();
         enabled.store (wasOn);
         message = {};
         return true;
@@ -238,9 +281,10 @@ public:
             auto& s = strips[(size_t) i];
             if (s.used.load()) continue;
             s.take = t; s.part = part; s.levelDb.store (0.0f); s.pan.store (0.0f); s.mute.store (false); s.solo.store (false);
-            s.offsetMs = (i * 7) % 23; s.voice = {}; s.pendingVoice = {}; s.status = {};
+            s.offsetMs = (i * 7) % 23; s.voice = {}; s.pendingVoice = {}; s.status = {}; s.normalRole = false; s.env.reset();
             s.used.store (true);
             setVoice (i, voice);
+            rebuildEnvs (t, part);
             return i;
         }
         return -1;
@@ -250,8 +294,8 @@ public:
     {
         auto& s = strips[(size_t) i];
         s.used.store (false);
-        const juce::SpinLock::ScopedLockType sl (lock);
-        s.audio.reset();
+        { const juce::SpinLock::ScopedLockType sl (lock); s.audio.reset(); s.env.reset(); }
+        rebuildEnvs (s.take, s.part);
         saveMix();
     }
 
@@ -266,7 +310,9 @@ public:
             if (auto a = load (tk, s.part, voice))
             {
                 { const juce::SpinLock::ScopedLockType sl (lock); s.audio = a; }
+                const bool roleChange = (s.voice == "original") != (voice == "original");
                 s.voice = voice; s.pendingVoice = {}; s.status = {};
+                if (roleChange && ! takes.empty()) rebuildEnvs (s.take, s.part);
             }
             else s.status = "Can't read the " + voiceLabel (voice) + " file";
         }
@@ -322,6 +368,7 @@ public:
                 d->setProperty ("voice", s.pendingVoice.isNotEmpty() ? s.pendingVoice : s.voice);
                 d->setProperty ("level", s.levelDb.load()); d->setProperty ("pan", s.pan.load());
                 d->setProperty ("mute", s.mute.load()); d->setProperty ("solo", s.solo.load());
+                d->setProperty ("normal", s.normalRole);
                 ss.add (juce::var (d.get()));
             }
             o->setProperty ("strips", ss);
@@ -336,7 +383,7 @@ public:
         for (int t = 0; t < (int) takes.size(); ++t)
         {
             n = 0;
-            for (auto& s : strips) if (s.used.load() && s.take == t) { ++n; s.levelDb.store (0.0f); }
+            for (auto& s : strips) if (s.used.load() && s.take == t && ! s.normalRole) { ++n; s.levelDb.store (0.0f); }
             maxPerTake = juce::jmax (maxPerTake, n);
         }
         busDb.store (-7.5f - 10.0f * std::log10 ((float) juce::jmax (1, maxPerTake)));
@@ -366,7 +413,8 @@ public:
             {
                 const auto j = off + (juce::int64) k;
                 if (j < 0 || j >= len) continue;
-                out.addSample (0, (int) j, gl * a[k]); out.addSample (1, (int) j, gr * a[k]);
+                const float e = s.env != nullptr && k < s.env->size() ? (*s.env)[k] : 1.0f;
+                out.addSample (0, (int) j, gl * e * a[k]); out.addSample (1, (int) j, gr * e * a[k]);
             }
         }
         if (dip.load())
@@ -385,6 +433,165 @@ public:
         std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (file), rateOut, 2, 24, {}, 0));
         if (w == nullptr || ! w->writeFromAudioSampleBuffer (out, 0, len)) return -1;
         return first;
+    }
+
+    //==========================================================================
+    // Recording parts (shared by the Harmony and Choir tabs: whichever tab armed it, either one finishes it)
+    struct PendingArm
+    {
+        bool active = false;
+        std::vector<int> parts, regs, lo, hi;
+        std::vector<juce::String> singers;   // Harmony tab: per part "auto" / "off" / voice id (empty = Choir tab default mix)
+        std::vector<bool> doubles;
+    } pendingArm;
+
+    /** Arms `recorder` for a new take in the open group (a new group if none is open). */
+    bool beginArm (HarmonyExporter& recorder, PendingArm a)
+    {
+        if (a.parts.empty()) return false;
+        a.lo.assign (a.parts.size(), 0); a.hi.assign (a.parts.size(), 0); a.active = true;
+        pendingArm = std::move (a);
+        enabled.store (false);
+        if (! isOpen()) newGroup ("Group " + juce::String (groupNames().size() + 1));
+        const auto dir = folder.getNonexistentChildFile ("Take " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S"), {}, false);
+        return recorder.arm (dir.getChildFile ("parts.wav"));
+    }
+
+    /** Call from a GUI timer: tracks each part's notes while recording; turns a finished recording into a take. True when a take was added. */
+    bool pollArm (HarmonyExporter& recorder, const std::function<int (int part)>& voiceNote)
+    {
+        if (! pendingArm.active) return false;
+        using S = HarmonyExporter::State;
+        const auto st = recorder.getState();
+        if (st == S::recording)
+            for (size_t k = 0; k < pendingArm.parts.size(); ++k)
+                if (const int n = voiceNote (pendingArm.parts[k]); n > 0)
+                {
+                    pendingArm.lo[k] = pendingArm.lo[k] == 0 ? n : juce::jmin (pendingArm.lo[k], n);
+                    pendingArm.hi[k] = juce::jmax (pendingArm.hi[k], n);
+                }
+        if (st == S::idle || st == S::error) { pendingArm.active = false; return false; }   // cancelled
+        if (st != S::ready) return false;
+        auto a = std::move (pendingArm); pendingArm = {};
+        createFromRecording (recorder.getFile().getParentDirectory(), recorder.getSampleRate(), recorder.getStartSample(),
+                             a.parts, a.regs, a.lo, a.hi, a.singers, a.doubles);
+        recorder.cancel();   // back to idle (the file stays)
+        enabled.store (true);
+        return true;
+    }
+
+    //==========================================================================
+    // Harmony tab: each voice card = one part of the latest take
+    int latestTake() const { return (int) takes.size() - 1; }
+    int pendingCount() const { int n = 0; for (auto& s : strips) n += s.used.load() && s.pendingVoice.isNotEmpty() ? 1 : 0; return n; }
+
+    /** The card's AI singers on the latest take: which = 0 (main) or 1 (double). Empty = none. */
+    juce::String cardVoice (int part, int which) const
+    {
+        const int t = latestTake(); int k = 0;
+        for (auto& s : strips)
+            if (s.used.load() && s.take == t && s.part == part && ! s.normalRole && k++ == which)
+                return s.pendingVoice.isNotEmpty() ? s.pendingVoice : s.voice;
+        return {};
+    }
+    int cardStrip (int part, int which) const
+    {
+        const int t = latestTake(); int k = 0;
+        for (int i = 0; i < maxStrips; ++i)
+        {
+            auto& s = strips[(size_t) i];
+            if (s.used.load() && s.take == t && s.part == part && ! s.normalRole && k++ == which) return i;
+        }
+        return -1;
+    }
+    bool hasPart (int part) const
+    {
+        const int t = latestTake();
+        return t >= 0 && std::find (takes[(size_t) t].parts.begin(), takes[(size_t) t].parts.end(), part) != takes[(size_t) t].parts.end();
+    }
+
+    /** voice "off" removes the card's AI singers (the part's own voice then sings every note). */
+    void setCardSinger (int part, const juce::String& voice)
+    {
+        const int t = latestTake();
+        if (t < 0 || ! hasPart (part)) return;
+        if (voice == "off") { for (int w = 1; w >= 0; --w) if (const int i = cardStrip (part, w); i >= 0) removeStrip (i); return; }
+        const auto v = voice == "auto" ? bestFit (takes[(size_t) t], part, {}) : voice;
+        if (const int i = cardStrip (part, 0); i >= 0) setVoice (i, v);
+        else if (const int i2 = addStrip (t, part, v); i2 >= 0) strips[(size_t) i2].pan.store (part % 2 == 0 ? 0.35f : -0.35f);
+    }
+
+    void setCardDouble (int part, bool on)
+    {
+        const int t = latestTake();
+        if (t < 0 || ! hasPart (part)) return;
+        const int d = cardStrip (part, 1), m = cardStrip (part, 0);
+        if (! on) { if (d >= 0) removeStrip (d); return; }
+        if (d >= 0 || m < 0) return;
+        if (const int i = addStrip (t, part, bestFit (takes[(size_t) t], part, cardVoice (part, 0))); i >= 0)
+            strips[(size_t) i].pan.store (-strips[(size_t) m].pan.load());
+    }
+
+    const std::vector<NoteSeg>* partNotes (int part) const
+    {
+        const int t = latestTake();
+        return t >= 0 && part >= 1 && part <= numParts ? &takes[(size_t) t].notes[(size_t) part - 1] : nullptr;
+    }
+    juce::int64 latestStart() const { return latestTake() >= 0 ? takes.back().start : 0; }
+    juce::int64 latestLength() const { return latestTake() >= 0 ? takes.back().length : 0; }
+
+    /** Click on a note: AI -> normal (the part's own voice) -> muted -> AI. */
+    void cycleNote (int part, int idx)
+    {
+        const int t = latestTake();
+        if (t < 0 || part < 1 || part > numParts) return;
+        auto& ns = takes[(size_t) t].notes[(size_t) part - 1];
+        if (idx < 0 || idx >= (int) ns.size()) return;
+        ns[(size_t) idx].state = (ns[(size_t) idx].state + 1) % 3;
+        saveNotes (takes[(size_t) t]);
+        rebuildEnvs (t, part);
+    }
+
+    /** One mono WAV per audible singer of the open group (level and note states applied, no pan / choir level),
+        each starting at the song's start so they line up when dropped at bar 1. */
+    juce::Array<juce::File> exportStems (const juce::File& dir)
+    {
+        juce::Array<juce::File> files;
+        dir.deleteRecursively(); dir.createDirectory();
+        bool anySolo = false;
+        for (auto& s : strips) anySolo = anySolo || (s.used.load() && s.solo.load());
+        for (auto& s : strips)
+        {
+            if (! s.used.load() || s.audio == nullptr || s.mute.load() || (anySolo && ! s.solo.load()) || s.take >= (int) takes.size()) continue;
+            const auto& tk = takes[(size_t) s.take];
+            const auto& a = *s.audio;
+            bool audible = s.env == nullptr;
+            if (! audible) for (float e : *s.env) if (e > 0.0f) { audible = true; break; }
+            if (! audible) continue;
+            const auto lead = tk.start + (juce::int64) (s.offsetMs * 0.001 * tk.rate);
+            const float g = juce::Decibels::decibelsToGain (s.levelDb.load());
+            juce::String name = "V" + juce::String (s.part) + " ";
+            if (s.normalRole) name << "normal voice";
+            else if (auto* v = info (s.voice)) name << (v->reg < 0 ? juce::String ("original") : juce::String (v->name));
+            const auto f = dir.getNonexistentChildFile (juce::File::createLegalFileName (name), ".wav", false);
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (f), tk.rate, 1, 24, {}, 0));
+            if (w == nullptr) continue;
+            std::vector<float> chunk (65536);
+            for (juce::int64 pos = 0, total = lead + (juce::int64) a.size(); pos < total; pos += (juce::int64) chunk.size())
+            {
+                const int n = (int) std::min<juce::int64> ((juce::int64) chunk.size(), total - pos);
+                for (int i = 0; i < n; ++i)
+                {
+                    const auto k = pos + i - lead;
+                    chunk[(size_t) i] = k < 0 ? 0.0f : g * a[(size_t) k] * (s.env != nullptr && (size_t) k < s.env->size() ? (*s.env)[(size_t) k] : 1.0f);
+                }
+                const float* ch[1] = { chunk.data() };
+                w->writeFromFloatArrays (ch, 1, n);
+            }
+            files.add (f);
+        }
+        return files;
     }
 
     std::atomic<bool> enabled { false }, dip { true };
@@ -409,6 +616,7 @@ public:
             if (s.take >= (int) takes.size()) continue;
             const auto& tk = takes[(size_t) s.take];
             const auto& a = *s.audio;
+            const auto* env = s.env.get();
             const double ratio = tk.rate / hostRate;
             const float g = juce::Decibels::decibelsToGain (s.levelDb.load (std::memory_order_relaxed));
             const float p = juce::jlimit (-1.0f, 1.0f, s.pan.load (std::memory_order_relaxed));
@@ -421,7 +629,8 @@ public:
                 const auto k = (juce::int64) std::floor (x);
                 if (k < 0 || k + 1 >= (juce::int64) a.size()) continue;
                 const float f = (float) (x - (double) k);
-                const float v = a[(size_t) k] + f * (a[(size_t) k + 1] - a[(size_t) k]);
+                float v = a[(size_t) k] + f * (a[(size_t) k + 1] - a[(size_t) k]);
+                if (env != nullptr && (size_t) k < env->size()) v *= (*env)[(size_t) k];
                 tmpL[(size_t) i] += gl * v; tmpR[(size_t) i] += gr * v;
                 any = true;
             }
@@ -474,6 +683,7 @@ private:
             s.take = t; s.part = (int) d["part"]; s.voice = d["voice"].toString(); s.pendingVoice = {}; s.status = {};
             s.levelDb.store ((float) d["level"]); s.pan.store ((float) d["pan"]);
             s.mute.store ((bool) d["mute"]); s.solo.store ((bool) d["solo"]); s.offsetMs = (i * 7) % 23;
+            s.normalRole = (bool) d["normal"]; s.env.reset();
             s.used.store (true);
         }
         return true;
@@ -490,7 +700,7 @@ private:
                 const int i = freeStrip();
                 if (v.reg < 0 || k >= 2 || i < 0 || ! fits (t, part, v)) continue;
                 auto& s = strips[(size_t) i];
-                s.take = t; s.part = part; s.voice = v.id; s.pendingVoice = {}; s.status = {};
+                s.take = t; s.part = part; s.voice = v.id; s.pendingVoice = {}; s.status = {}; s.normalRole = false; s.env.reset();
                 s.levelDb.store (0.0f); s.pan.store ((k == 0 ? -1.0f : 1.0f) * (0.25f + 0.15f * (float) v.reg));
                 s.mute.store (false); s.solo.store (false); s.offsetMs = (i * 7) % 23;
                 s.used.store (true); ++k;
@@ -520,6 +730,139 @@ private:
             }
             else if (tk.folder.getChildFile ("requests").getChildFile (key (s.part, v) + ".working").existsAsFile())
                 s.status = "Making " + voiceLabel (v) + "...";
+        }
+    }
+
+    /** Best-fitting singer for a part (register + range), skipping `exclude`. */
+    juce::String bestFit (const Take& tk, int part, const juce::String& exclude) const
+    {
+        const int reg = tk.reg[(size_t) part - 1], lo = tk.lo[(size_t) part - 1], hi = tk.hi[(size_t) part - 1];
+        juce::String sameReg;
+        for (auto& v : catalog())
+        {
+            if (v.reg < 0 || exclude == v.id) continue;
+            if (lo > 0 && lo >= v.lo && hi <= v.hi && v.reg == reg) return v.id;
+            if (sameReg.isEmpty() && v.reg == reg) sameReg = v.id;
+        }
+        if (sameReg.isNotEmpty()) return sameReg;
+        for (auto& v : catalog()) if (v.reg >= 0 && exclude != v.id && lo > 0 && lo >= v.lo && hi <= v.hi) return v.id;
+        return "fmid_a";
+    }
+
+    /** Sung notes of each part (MPM pitch, 2048 / hop 512), written to notes.json. */
+    static void detectNotes (const juce::File& takeDir, const std::vector<int>& parts)
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> rd (wav.createReaderFor (takeDir.getChildFile ("parts.wav").createInputStream().release(), true));
+        if (rd == nullptr) return;
+        const int len = (int) rd->lengthInSamples, win = 2048, hop = 512;
+        juce::AudioBuffer<float> buf ((int) rd->numChannels, len);
+        rd->read (&buf, 0, len, 0, true, true);
+        MPMDetector det; det.prepare (rd->sampleRate, win);
+        Take tk; tk.folder = takeDir;
+        for (int part : parts)
+        {
+            if (part >= buf.getNumChannels()) continue;
+            auto& ns = tk.notes[(size_t) part - 1];
+            const float* x = buf.getReadPointer (part);
+            int cur = 0; juce::int64 segStart = 0, lastVoiced = 0;
+            auto close = [&] (juce::int64 end)
+            {
+                if (cur > 0 && end - segStart > (juce::int64) (0.08 * rd->sampleRate))
+                {
+                    if (! ns.empty() && ns.back().midi == cur && segStart - ns.back().end < (juce::int64) (0.06 * rd->sampleRate)) ns.back().end = end;
+                    else ns.push_back ({ segStart, end, cur, noteAI });
+                }
+                cur = 0;
+            };
+            for (int p = 0; p + win <= len; p += hop)
+            {
+                const auto r = det.processFrame (x + p);
+                const juce::int64 centre = p + win / 2;
+                const int m = r.isVoiced && r.pitchHz > 60.0f && r.pitchHz < 1400.0f ? (int) std::lround (69.0 + 12.0 * std::log2 (r.pitchHz / 440.0)) : 0;
+                if (m == cur && m > 0) { lastVoiced = centre; continue; }
+                if (m > 0 && cur > 0 && std::abs (m - cur) == 0) continue;
+                close (cur > 0 ? lastVoiced : centre);
+                if (m > 0) { cur = m; segStart = centre - hop / 2; lastVoiced = centre; }
+            }
+            close (lastVoiced);
+        }
+        saveNotes (tk);
+    }
+
+    static void saveNotes (const Take& tk)
+    {
+        juce::DynamicObject::Ptr o = new juce::DynamicObject();
+        for (int p = 1; p <= numParts; ++p)
+        {
+            const auto& ns = tk.notes[(size_t) p - 1];
+            if (ns.empty()) continue;
+            juce::Array<juce::var> arr;
+            for (auto& n : ns) arr.add (juce::Array<juce::var> { (juce::int64) n.start, (juce::int64) n.end, n.midi, n.state });
+            o->setProperty ("part" + juce::String (p), arr);
+        }
+        tk.folder.getChildFile ("notes.json").replaceWithText (juce::JSON::toString (juce::var (o.get()), true));
+    }
+
+    static void loadNotes (Take& tk)
+    {
+        const auto js = juce::JSON::parse (tk.folder.getChildFile ("notes.json"));
+        for (int p = 1; p <= numParts; ++p)
+            if (auto* arr = js.getProperty (juce::Identifier ("part" + juce::String (p)), {}).getArray())
+                for (auto& n : *arr)
+                    if (n.size() >= 4)
+                    {
+                        NoteSeg seg; seg.start = (juce::int64) n[0]; seg.end = (juce::int64) n[1]; seg.midi = (int) n[2]; seg.state = (int) n[3];
+                        tk.notes[(size_t) p - 1].push_back (seg);
+                    }
+    }
+
+    void rebuildAllEnvs()
+    {
+        for (int t = 0; t < (int) takes.size(); ++t)
+            for (int part : takes[(size_t) t].parts) rebuildEnvs (t, part);
+    }
+
+    /** Per-sample gain of each strip on (take, part) from the note states, with 10 ms fades. */
+    void rebuildEnvs (int t, int part)
+    {
+        if (t < 0 || t >= (int) takes.size() || part < 1 || part > numParts) return;
+        const auto& tk = takes[(size_t) t];
+        const auto& ns = tk.notes[(size_t) part - 1];
+        bool hasAI = false;
+        for (auto& s : strips) hasAI = hasAI || (s.used.load() && s.take == t && s.part == part && ! s.normalRole && s.voice != "original");
+        const auto len = (size_t) std::max<juce::int64> (1, tk.length);
+        // state per sample: a note owns the time up to the next note (consonants / breaths go with it)
+        std::vector<unsigned char> st (len, (unsigned char) noteAI);
+        for (size_t k = 0; k < ns.size(); ++k)
+        {
+            const auto a = (size_t) std::clamp<juce::int64> (k == 0 ? 0 : ns[k].start, 0, (juce::int64) len);
+            const auto b = (size_t) std::clamp<juce::int64> (k + 1 < ns.size() ? ns[k + 1].start : (juce::int64) len, 0, (juce::int64) len);
+            std::fill (st.begin() + (long) a, st.begin() + (long) b, (unsigned char) ns[k].state);
+        }
+        auto make = [&] (auto gainOf) -> std::shared_ptr<const std::vector<float>>
+        {
+            auto e = std::make_shared<std::vector<float>> (len);
+            for (size_t i = 0; i < len; ++i) (*e)[i] = gainOf (st[i]) ? 1.0f : 0.0f;
+            const int fade = juce::jmax (1, (int) (0.01 * tk.rate));   // linear-ish edges: moving average
+            std::vector<float> c (len + 1, 0.0f);
+            for (size_t i = 0; i < len; ++i) c[i + 1] = c[i] + (*e)[i];
+            for (size_t i = 0; i < len; ++i)
+            {
+                const auto lo = i >= (size_t) fade / 2 ? i - (size_t) fade / 2 : 0, hi = std::min (len, i + (size_t) fade / 2 + 1);
+                (*e)[i] = (c[hi] - c[lo]) / (float) (hi - lo);
+            }
+            return e;
+        };
+        const bool none = ns.empty();
+        auto aiEnv = none ? nullptr : make ([] (unsigned char x) { return x == noteAI; });
+        auto origEnv = none ? nullptr : make ([] (unsigned char x) { return x != noteMuted; });
+        auto normalEnv = make ([&] (unsigned char x) { return x == noteNormal || (x == noteAI && ! hasAI); });
+        const juce::SpinLock::ScopedLockType sl (lock);
+        for (auto& s : strips)
+        {
+            if (! s.used.load() || s.take != t || s.part != part) continue;
+            s.env = s.normalRole ? normalEnv : (s.voice == "original" ? origEnv : aiEnv);
         }
     }
 

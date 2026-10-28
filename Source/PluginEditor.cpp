@@ -413,7 +413,7 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
         repaint();
     }),
     workstationView(p.apvts, p.getPitchTraceQueue()),
-    harmonyView(p.apvts, p.getHarmonyEngine(), p.getHarmonyExporter(), [&p] { return p.isSidechainConnected(); }),
+    harmonyView(p.apvts, p.getHarmonyEngine(), p.getHarmonyExporter(), [&p] { return p.isSidechainConnected(); }, p.getChoir(), p.getChoirRecorder()),
     choirView(p.apvts, p.getHarmonyEngine(), p.getChoirRecorder(), p.getChoir()),
     masterBar(p.apvts, p.getInputPeakMeter(), p.getOutputPeakMeter())
 {

@@ -360,7 +360,17 @@ int main(int argc, char** argv)
         if (testExport) { setP("harm_lead", -60.0f); np->getHarmonyExporter().arm(); }
         const bool testChoir = juce::SystemStats::getEnvironmentVariable("VIDEO_CHOIR", "0") == "1";
         const auto choirDir = outDir.getChildFile("choir").getChildFile("Test group").getChildFile("Take 1");
+        const bool testChoirize = juce::SystemStats::getEnvironmentVariable("VIDEO_CHOIR", "0") == "2";
         if (testChoir) { outDir.getChildFile("choir").deleteRecursively(); np->getChoirRecorder().arm(choirDir.getChildFile("parts.wav")); }
+        if (testChoirize)
+        {   // Harmony tab Choirize: voice 1 = Hila + double, voice 2 = Off (own voice)
+            ChoirSession::rootFolder().getChildFile("Choirize test").deleteRecursively();
+            np->getChoir().close(); np->getChoir().newGroup("Choirize test");
+            np->apvts.state.setProperty("choirSinger1", "fmid_b", nullptr); np->apvts.state.setProperty("choirDouble1", true, nullptr);
+            np->apvts.state.setProperty("choirSinger2", "off", nullptr);
+            ChoirSession::PendingArm a; a.parts = { 1, 2 }; a.regs = { 2, 0 }; a.singers = { "fmid_b", "off" }; a.doubles = { true, false };
+            np->getChoir().beginArm(np->getChoirRecorder(), a);
+        }
         playHead.pos = 0; playHead.playing = true;
         const int lat = proc->getLatencySamples();
         juce::AudioBuffer<float> out(2, total + lat + block * 4); out.clear();
@@ -515,6 +525,46 @@ int main(int argc, char** argv)
                 ChoirSession::rootFolder().getChildFile("Moved group").deleteRecursively();
             }
             std::cout << "choir replay (lead + 2 singers per part): best lag " << bestLag << " samples, error " << juce::Decibels::gainToDecibels((float) std::sqrt(err / juce::jmax(1e-12, ref))) << " dB vs choir\n";
+        }
+        if (testChoirize)
+        {
+            playHead.playing = false;
+            big.clear(); proc->processBlock(big, midi);
+            pump(400);
+            auto& choir = np->getChoir(); auto& rec = np->getChoirRecorder();
+            const bool made = choir.pollArm(rec, [](int) { return 0; });
+            std::cout << "choirize take made " << made << " takes " << choir.getNumTakes() << "\n";
+            const auto take = choir.take(choir.latestTake()).folder;
+            juce::AudioBuffer<float> parts;
+            {
+                std::unique_ptr<juce::AudioFormatReader> pr(wav.createReaderFor(new juce::FileInputStream(take.getChildFile("parts.wav")), true));
+                parts.setSize((int) pr->numChannels, (int) pr->lengthInSamples); pr->read(&parts, 0, parts.getNumSamples(), 0, true, true);
+            }
+            for (auto f : take.getChildFile("requests").findChildFiles(juce::File::findFiles, false, "*.req"))
+            {
+                const int part = f.loadFileAsString().getIntValue();
+                take.getChildFile("voices").createDirectory();
+                std::unique_ptr<juce::AudioFormatWriter> vw(wav.createWriterFor(new juce::FileOutputStream(take.getChildFile("voices").getChildFile(f.getFileNameWithoutExtension() + ".wav")), sr, 1, 24, {}, 0));
+                vw->writeFromFloatArrays(std::vector<const float*>{ parts.getReadPointer(part) }.data(), 1, parts.getNumSamples());
+                vw.reset(); f.deleteFile();
+            }
+            pump(1600);
+            for (int p = 1; p <= 2; ++p)
+            {
+                std::cout << "voice " << p << ": singers '" << choir.cardVoice(p, 0) << "' '" << choir.cardVoice(p, 1) << "' notes " << (choir.partNotes(p) ? choir.partNotes(p)->size() : 0);
+                if (choir.partNotes(p)) for (size_t k = 0; k < juce::jmin<size_t>(6, choir.partNotes(p)->size()); ++k)
+                    std::cout << " " << ChoirSession::noteName((*choir.partNotes(p))[k].midi) << "@" << juce::String((double) (*choir.partNotes(p))[k].start / sr, 2);
+                std::cout << "\n";
+            }
+            if (choir.partNotes(1) && choir.partNotes(1)->size() > 2) { choir.cycleNote(1, 1); choir.cycleNote(1, 2); choir.cycleNote(1, 2); }   // note 1 -> your voice, note 2 -> muted
+            const auto stems = choir.exportStems(choir.getFolder().getChildFile("Stems"));
+            std::cout << "stems:"; for (auto& f : stems) std::cout << " [" << f.getFileName() << " " << f.getSize() << "]"; std::cout << "\n";
+            presetBarTab(*ved, 1); pump(800);
+            {
+                auto img = ved->createComponentSnapshot(ved->getLocalBounds(), true, 1.0f);
+                juce::FileOutputStream os(outDir.getChildFile("harmony_choirize.png")); os.setPosition(0); os.truncate();
+                juce::PNGImageFormat().writeImageToStream(img, os);
+            }
         }
         ved.reset();
         proc->releaseResources();

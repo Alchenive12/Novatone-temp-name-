@@ -80,7 +80,6 @@ private:
     juce::Rectangle<int> topBar;
     std::unique_ptr<juce::FileChooser> chooser;
     HarmonyExporter::State lastRec = HarmonyExporter::State::idle;
-    std::vector<int> armParts, armRegs, armLo, armHi;
     juce::File lastFolder;
     int lastTakes = -1;
     juce::String note;
