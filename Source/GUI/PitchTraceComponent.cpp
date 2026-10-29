@@ -2773,6 +2773,33 @@ void PitchTraceComponent::paint(juce::Graphics& g)
         g.setColour(hairline());
         g.drawHorizontalLine(juce::roundToInt(corner.getBottom() - 1.0f), corner.getX(), corner.getRight());
         g.drawVerticalLine(juce::roundToInt(corner.getRight() - 1.0f), corner.getY(), corner.getBottom());
+
+        // Loading screen while a new sample is read / analysed
+        const bool polyLoading = isClipMode() && clipSession->getStatus() == Poly::ClipSession::Status::analysing;
+        if (loadingSample || polyLoading)
+        {
+            g.setColour(graphBackground.withAlpha(0.82f));
+            g.fillRect(outer);
+            const auto box = juce::Rectangle<float>(260.0f, 76.0f).withCentre(outer.getCentre());
+            g.setColour(panel);
+            g.fillRoundedRectangle(box, 8.0f);
+            g.setColour(hairline());
+            g.drawRoundedRectangle(box, 8.0f, 1.0f);
+            g.setColour(textPrimary);
+            g.setFont(HarmonyEngineUI::font(14.0f, true));
+            g.drawText("Loading sample...", polyLoading ? box.withTrimmedBottom(34.0f) : box,
+                       polyLoading ? juce::Justification::centredBottom : juce::Justification::centred);
+            // Poly analyses in the background and reports progress; Mono loads in one blocking step (no bar).
+            if (polyLoading)
+            {
+            const float p = juce::jlimit(0.0f, 1.0f, clipSession->getProgress());
+            const auto bar = juce::Rectangle<float>(box.getWidth() - 40.0f, 6.0f).withCentre({ box.getCentreX(), box.getBottom() - 22.0f });
+            g.setColour(textPrimary.withAlpha(0.12f));
+            g.fillRoundedRectangle(bar, 3.0f);
+            g.setColour(accent);
+            g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * p), 3.0f);
+            }
+        }
     }
 
     g.setColour(hairline());
@@ -3573,6 +3600,12 @@ void PitchTraceComponent::filesDropped(const juce::StringArray& files, int, int)
         repaint();
         return;
     }
+
+    // Mono loads synchronously: paint the loading screen now, before the message thread blocks.
+    loadingSample = true;
+    repaint();
+    if (auto* peer = getPeer()) peer->performAnyPendingRepaintsNow();
+    const juce::ScopeGuard hideLoading { [this] { loadingSample = false; repaint(); } };
 
     juce::AudioFormatManager formatManager;
     formatManager.registerBasicFormats();

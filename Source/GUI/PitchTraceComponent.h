@@ -312,6 +312,7 @@ private:
     int  clipHopSize  = 512;
     int  clipPlayHop  = -1;
     int  lastFilePlayHop = -1;
+    bool loadingSample = false;   // Mono file load in progress (loading screen)
     int  lastClipStatus = -1;
 
     juce::AudioBuffer<float> loadedAudioClip;
