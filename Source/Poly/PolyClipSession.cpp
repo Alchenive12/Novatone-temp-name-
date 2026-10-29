@@ -297,6 +297,7 @@ bool ClipSession::assembleRecording()
         audio->setSample (1, (int) i, p != nullptr ? p[off + 1] : 0.0f);
     }
 
+    {
     const std::lock_guard<std::mutex> g (dataLock);
     notesGeneration++;            // cancels any running analysis/render
     clip = audio;
@@ -310,6 +311,8 @@ bool ClipSession::assembleRecording()
     status.store (Status::analysing);
     progress.store (0.0f);
     requestWork();
+    }
+    // Outside dataLock: the callback reads the session (re-locking std::mutex aborts on MSVC).
     if (onClipChanged) onClipChanged();
     return true;
 }
@@ -344,6 +347,7 @@ bool ClipSession::loadFile (const juce::File& file, juce::int64 timelineStart)
         res = std::move (raw);
 
     setPreviewPlaying (false);
+    {
     const std::lock_guard<std::mutex> g (dataLock);
     notesGeneration++;
     clip = std::make_shared<juce::AudioBuffer<float>> (std::move (res));
@@ -357,6 +361,8 @@ bool ClipSession::loadFile (const juce::File& file, juce::int64 timelineStart)
     status.store (Status::analysing);
     progress.store (0.0f);
     requestWork();
+    }
+    // Outside dataLock: the callback reads the session (re-locking std::mutex aborts on MSVC).
     if (onClipChanged) onClipChanged();
     return true;
 }
