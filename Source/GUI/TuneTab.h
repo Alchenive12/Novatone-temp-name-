@@ -162,6 +162,7 @@ private:
     juce::TextButton   clipStopButton;
     juce::TextButton   clipToStartButton;
     juce::ToggleButton snapGridButton     { "Grid" };
+    juce::ToggleButton independentButton  { "Indep." };
     Poly::ClipSession* clipSession = nullptr;
     void updateClipControls();
 

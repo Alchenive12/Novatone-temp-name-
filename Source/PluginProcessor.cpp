@@ -505,6 +505,48 @@ void NovaToneAudioProcessor::publishPeaks(const juce::dsp::AudioBlock<float>& bl
     }
 }
 
+void NovaToneAudioProcessor::renderMonoPreview(juce::AudioBuffer<float>& buffer)
+{
+    auto& mp = pitchQueue.monoPreview;
+    const bool polyMode = tunePolyphonicParam != nullptr && tunePolyphonicParam->load(std::memory_order_relaxed) > 0.5f;
+    if (polyMode || ! mp.playing.load(std::memory_order_relaxed))
+        return;
+
+    bool hostPlaying = false;
+    if (auto* ph = getPlayHead())
+        if (const auto p = ph->getPosition())
+            hostPlaying = p->getIsPlaying();
+    if (hostPlaying && ! pitchQueue.independentPlay.load(std::memory_order_relaxed))
+        return; // DAW transport wins unless Independent is on
+
+    const juce::SpinLock::ScopedTryLockType tl(mp.lock);
+    if (! tl.isLocked() || mp.clip == nullptr || getSampleRate() <= 0.0)
+        return;
+
+    const auto& clip = *mp.clip;
+    const int len = clip.getNumSamples();
+    const int n = buffer.getNumSamples();
+    const double step = mp.clipRate / getSampleRate();
+    double pos = mp.pos.load(std::memory_order_relaxed);
+    for (int i = 0; i < n; ++i, pos += step)
+    {
+        // shortcut: linear interpolation for preview resampling; fine for monitoring, not for bouncing.
+        const int i0 = static_cast<int>(pos);
+        const float frac = static_cast<float>(pos - i0);
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        {
+            const int sc = juce::jmin(ch, clip.getNumChannels() - 1);
+            const float a = i0 < len ? clip.getSample(sc, i0) : 0.0f;
+            const float b = i0 + 1 < len ? clip.getSample(sc, i0 + 1) : 0.0f;
+            buffer.setSample(ch, i, a + frac * (b - a));
+        }
+    }
+    mp.pos.store(pos, std::memory_order_relaxed);
+    pitchQueue.currentPlayheadHop.store(static_cast<int>(pos / juce::jmax(1, mp.hopSamples)), std::memory_order_relaxed);
+    if (pos >= len)
+        mp.playing.store(false, std::memory_order_relaxed);
+}
+
 void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -556,6 +598,7 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
     for (auto ch = getMainBusNumInputChannels(); ch < mainChannels; ++ch)
         buffer.clear(ch, 0, buffer.getNumSamples());
 
+    renderMonoPreview(buffer);
     pushParametersToEngines();
 
     juce::dsp::AudioBlock<float> block(buffer);

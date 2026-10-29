@@ -186,7 +186,7 @@ bool ClipSession::playback (juce::AudioBuffer<float>& io, std::optional<juce::in
     {
         juce::int64 k0 = 0;
         bool hasPos = false;
-        if (hostPlaying && hostSample.has_value())
+        if (hostPlaying && hostSample.has_value() && ! independent.load())
         {
             k0 = *hostSample - latency - clipStart.load();
             hasPos = true;

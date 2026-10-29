@@ -55,8 +55,13 @@ public:
     /** Snap note slices / edge trims to the DAW's 1/16 grid. Off by default. */
     void setSnapToHostGrid(bool shouldSnap) noexcept { snapToGridEnabled = shouldSnap; repaint(); }
 
-    /** Clip mode: move the preview playhead (and the view) back to the clip start. */
+    /** Preview transport for the loaded clip: Poly = clip session, Mono = dropped/loaded file. */
+    bool hasPreviewClip() const;
+    void setPreviewPlaying(bool shouldPlay);
+    /** Moves the preview playhead (and the view) back to the clip start. */
     void seekClipToStart();
+    /** Independent: preview ignores the DAW transport/position (plays only from Play / Stop). */
+    void setIndependentPlay(bool independent);
 
     void setAutoScroll(bool shouldFollow) noexcept;
     bool isAutoScroll() const noexcept { return autoScrollEnabled; }
@@ -306,6 +311,7 @@ private:
     const void* lastImportedAnalysis = nullptr;
     int  clipHopSize  = 512;
     int  clipPlayHop  = -1;
+    int  lastFilePlayHop = -1;
     int  lastClipStatus = -1;
 
     juce::AudioBuffer<float> loadedAudioClip;

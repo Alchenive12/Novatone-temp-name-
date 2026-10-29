@@ -587,13 +587,48 @@ void PitchTraceComponent::selectAdjacentNote(int direction)
     }
 }
 
+bool PitchTraceComponent::hasPreviewClip() const
+{
+    if (isClipMode())
+        return clipSession->getStatus() == Poly::ClipSession::Status::ready;
+    return ! polyphonicModeEnabled && queue.monoPreview.hasClip();
+}
+
+void PitchTraceComponent::setPreviewPlaying(bool shouldPlay)
+{
+    if (isClipMode())
+    {
+        clipSession->setPreviewPlaying(shouldPlay);
+        return;
+    }
+    auto& mp = queue.monoPreview;
+    if (shouldPlay && ! mp.hasClip()) return;
+    if (shouldPlay && mp.pos.load() >= static_cast<double>(loadedAudioClip.getNumSamples()))
+        mp.pos.store(0.0);
+    mp.playing.store(shouldPlay);
+}
+
 void PitchTraceComponent::seekClipToStart()
 {
-    if (! isClipMode()) return;
-    clipSession->seekPreview(0);
-    clipPlayHop = 0;
+    if (isClipMode())
+    {
+        clipSession->seekPreview(0);
+        clipPlayHop = 0;
+    }
+    else
+    {
+        queue.monoPreview.pos.store(0.0);
+        queue.currentPlayheadHop.store(0, std::memory_order_relaxed);
+    }
     viewStartHop = 0.0f;
     repaint();
+}
+
+void PitchTraceComponent::setIndependentPlay(bool independent)
+{
+    queue.independentPlay.store(independent);
+    if (clipSession != nullptr)
+        clipSession->setIndependent(independent);
 }
 
 double PitchTraceComponent::hopToHostPpq(int hop) const noexcept
@@ -758,6 +793,7 @@ void PitchTraceComponent::clearTimeline()
     notes.clear();
     referenceGhostNotes.clear();
     loadedAudioClip.setSize(0, 0);
+    queue.monoPreview.clear();
     selectedNoteId = -1;
     hoveredNoteId = -1;
     advancedEditNoteId = -1;
@@ -1589,8 +1625,8 @@ void PitchTraceComponent::appendHopToTimeline(const PitchTraceQueue::PitchData& 
         timeline.erase(timeline.begin(), timeline.begin() + dropCount);
         for (auto& n : notes)
         {
-            n.startHop -= dropCount;
-            n.endHop   -= dropCount;
+            n.startHop = juce::jmax(0, n.startHop - dropCount); // a note straddling the cut must not go negative
+            n.endHop  -= dropCount;
         }
         notes.erase(std::remove_if(notes.begin(), notes.end(),
             [](const NewtoneNoteBlock& n) { return n.endHop <= 0; }), notes.end());
@@ -1865,6 +1901,21 @@ void PitchTraceComponent::timerCallback()
         }
         if (needsRepaint) repaint();
         return;
+    }
+
+    if (loadedAudioClip.getNumSamples() > 0)
+    {
+        // A loaded file owns the timeline: live hops (incl. the preview's own) would append to it and
+        // push the file off the start. Clear the roll to go back to live capture.
+        popScratch.clear();
+        const int hop = queue.currentPlayheadHop.load(std::memory_order_relaxed);
+        if (hop != lastFilePlayHop)
+        {
+            lastFilePlayHop = hop;
+            if (autoScrollEnabled && (static_cast<float>(hop) > viewStartHop + visibleHopsCount * 0.88f || static_cast<float>(hop) < viewStartHop))
+                viewStartHop = juce::jmax(0.0f, static_cast<float>(hop) - visibleHopsCount * 0.12f);
+            needsRepaint = true;
+        }
     }
 
     if (!popScratch.empty())
@@ -3007,6 +3058,8 @@ void PitchTraceComponent::mouseDown(const juce::MouseEvent& e)
         const int scrubH = juce::jlimit(0, juce::jmax(0, static_cast<int>(timeline.size()) - 1),
                                         static_cast<int>(std::lround(xToHop(pt.x, grid))));
         queue.currentPlayheadHop.store(scrubH, std::memory_order_relaxed);
+        if (! polyphonicModeEnabled)
+            queue.monoPreview.pos.store(static_cast<double>(scrubH) * queue.monoPreview.hopSamples);
         if (isClipMode())
         {
             clipPlayHop = scrubH;
@@ -3230,6 +3283,8 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
         const int scrubH = juce::jlimit(0, juce::jmax(0, static_cast<int>(timeline.size()) - 1),
                                         static_cast<int>(std::lround(xToHop(pt.x, grid))));
         queue.currentPlayheadHop.store(scrubH, std::memory_order_relaxed);
+        if (! polyphonicModeEnabled)
+            queue.monoPreview.pos.store(static_cast<double>(scrubH) * queue.monoPreview.hopSamples);
         if (isClipMode())
         {
             clipPlayHop = scrubH;
@@ -3546,6 +3601,7 @@ void PitchTraceComponent::analyzeAudioBufferIntoNotes(const juce::AudioBuffer<fl
 
     const int windowSize = juce::nextPowerOfTwo(static_cast<int>(std::ceil(2.0 * sampleRate / 60.0)));
     const int hopSize    = windowSize / 4;
+    queue.monoPreview.setClip(buffer, sampleRate, hopSize);
 
     MPMDetector offlineDetector;
     offlineDetector.prepare(sampleRate, windowSize);
@@ -3858,6 +3914,7 @@ void PitchTraceComponent::analyzeAudioBufferIntoNotes(const juce::AudioBuffer<fl
     visibleHopsCount = static_cast<float>(std::clamp<size_t>(timeline.size() + 8, 80, 320));
     notifySelectionChanged();
     repaint();
+    if (onClipStatusChanged) onClipStatusChanged(); // enables the Mono Play / Stop buttons
 }
 
 void PitchTraceComponent::promptLoadAudioFile()
