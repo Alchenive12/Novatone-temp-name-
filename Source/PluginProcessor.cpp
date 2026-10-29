@@ -672,6 +672,7 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
             if (pos->getBpm().hasValue())         bpm = *pos->getBpm();
         }
     }
+    pitchQueue.hostBpm.store(bpm, std::memory_order_relaxed);
 
     const int currentHopIdx = tuneEngine.getCurrentHopIndex();
     if (currentHopIdx == lastPublishedHopIndex)

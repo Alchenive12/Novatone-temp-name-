@@ -159,6 +159,9 @@ private:
     juce::TextButton   fileMenuButton     { "File" };
     juce::ToggleButton recordButton       { "Rec" };
     juce::TextButton   clipPlayButton;
+    juce::TextButton   clipStopButton;
+    juce::TextButton   clipToStartButton;
+    juce::ToggleButton snapGridButton     { "Grid" };
     Poly::ClipSession* clipSession = nullptr;
     void updateClipControls();
 

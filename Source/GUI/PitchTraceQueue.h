@@ -306,6 +306,7 @@ public:
     std::atomic<bool>  globalMidiCleanMode { false }; ///< True = Instrument MIDI Clean & Denoise Mode
     std::atomic<uint16_t> activeScaleMask { 0x0AB5 }; // C Major default
     std::atomic<bool>  snapToScale       { true };
+    std::atomic<double> hostBpm          { 120.0 }; ///< Latest host tempo (clip-mode DAW grid).
     std::atomic<bool>  autoScroll        { true };
     std::atomic<bool>  replayMode        { false };
     std::atomic<int>   currentPlayheadHop { 0 };

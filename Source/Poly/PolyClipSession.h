@@ -89,6 +89,8 @@ namespace Poly
         bool   hasClip() const noexcept { return clipLength.load() > 0; }
         double getClipSampleRate() const noexcept { return clipRate.load(); }
         juce::int64 getClipLength() const noexcept { return clipLength.load(); }
+        /** Song position (session-rate samples) of clip sample 0. */
+        juce::int64 getClipStart() const noexcept { return clipStart.load(); }
 
         /** True once the audible render reflects the latest notes. */
         bool isRenderCurrent() const

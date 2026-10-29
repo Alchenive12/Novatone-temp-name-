@@ -587,6 +587,46 @@ void PitchTraceComponent::selectAdjacentNote(int direction)
     }
 }
 
+void PitchTraceComponent::seekClipToStart()
+{
+    if (! isClipMode()) return;
+    clipSession->seekPreview(0);
+    clipPlayHop = 0;
+    viewStartHop = 0.0f;
+    repaint();
+}
+
+double PitchTraceComponent::hopToHostPpq(int hop) const noexcept
+{
+    if (isClipMode())
+    {
+        // shortcut: one tempo from song start (host's current BPM); use the host's PPQ per hop if tempo changes matter.
+        const double rate = clipSession->getClipSampleRate();
+        if (rate <= 0.0) return 0.0;
+        const double sec = static_cast<double>(clipSession->getClipStart() + static_cast<juce::int64>(hop) * clipHopSize) / rate;
+        return sec * queue.hostBpm.load(std::memory_order_relaxed) / 60.0;
+    }
+    return timeline[(size_t)hop].data.ppqPosition; // captured from the host while it played
+}
+
+int PitchTraceComponent::snapHopToHostGrid(int hop) const noexcept
+{
+    const int size = static_cast<int>(timeline.size());
+    if (! snapToGridEnabled || size < 2) return hop;
+    hop = juce::jlimit(0, size - 1, hop);
+    constexpr double step = 0.25; // 1/16 note in quarter-note PPQ
+    const double target = std::round(hopToHostPpq(hop) / step) * step;
+    // Nearest hop to the grid line; no host PPQ (all equal) leaves the hop unchanged.
+    int best = hop;
+    double bestErr = std::abs(hopToHostPpq(hop) - target);
+    for (int k = juce::jmax(0, hop - 128); k <= juce::jmin(size - 1, hop + 128); ++k)
+    {
+        const double err = std::abs(hopToHostPpq(k) - target);
+        if (err < bestErr) { bestErr = err; best = k; }
+    }
+    return best;
+}
+
 void PitchTraceComponent::setSnapToScale(bool shouldSnap) noexcept
 {
     snapToScaleEnabled = shouldSnap;
@@ -2365,6 +2405,23 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
     const int firstSub = juce::jmax(0, static_cast<int>(std::floor(viewStartHop / hopsPerQuarterBeat)));
     const int lastSub  = static_cast<int>(std::ceil((viewStartHop + visibleHopsCount) / hopsPerQuarterBeat));
 
+    if (snapToGridEnabled && timeline.size() > 1)
+    {
+        // Show the DAW's 1/16 grid the edits snap to. shortcut: bars assume 4/4.
+        const int h0 = juce::jmax(1, static_cast<int>(viewStartHop));
+        const int h1 = juce::jmin(static_cast<int>(timeline.size()) - 1, static_cast<int>(viewStartHop + visibleHopsCount) + 1);
+        for (int h = h0; h <= h1; ++h)
+        {
+            const auto sub = static_cast<juce::int64>(std::floor(hopToHostPpq(h) / 0.25));
+            if (sub == static_cast<juce::int64>(std::floor(hopToHostPpq(h - 1) / 0.25)))
+                continue;
+            const bool isBar  = (sub % 16) == 0;
+            const bool isBeat = (sub % 4) == 0;
+            g.setColour(textPrimary.withAlpha(isBar ? 0.12f : (isBeat ? 0.055f : 0.022f)));
+            g.drawVerticalLine(juce::roundToInt(hopToX(static_cast<float>(h), grid)), grid.getY(), grid.getBottom());
+        }
+    }
+    else
     for (int sub = firstSub; sub <= lastSub; ++sub)
     {
         const float x = hopToX(static_cast<float>(sub) * hopsPerQuarterBeat, grid);
@@ -3083,7 +3140,7 @@ void PitchTraceComponent::mouseDown(const juce::MouseEvent& e)
         if (e.mods.isCtrlDown() || e.mods.isAltDown())
             joinNoteWithNext(noteIdx);
         else
-            splitNoteAtHop(noteIdx, static_cast<int>(std::lround(xToHop(pt.x, grid))));
+            splitNoteAtHop(noteIdx, snapHopToHostGrid(static_cast<int>(std::lround(xToHop(pt.x, grid)))));
         return;
     }
 
@@ -3240,7 +3297,7 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
         case DragAction::TrimNoteLeft:
         {
             const int oldStart = note->startHop;
-            const int newStart = juce::jlimit(0, note->endHop - 2, static_cast<int>(std::lround(xToHop(pt.x, grid))));
+            const int newStart = juce::jlimit(0, note->endHop - 2, snapHopToHostGrid(static_cast<int>(std::lround(xToHop(pt.x, grid)))));
             // Problem #3 Fix: Linked Boundary Time-Warping (Alt + Left-Edge Drag stretches/compresses previous note):
             if (e.mods.isAltDown())
             {
@@ -3263,7 +3320,7 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
         {
             const int maxH   = static_cast<int>(timeline.size());
             const int oldEnd = note->endHop;
-            const int newEnd = juce::jlimit(note->startHop + 2, maxH, static_cast<int>(std::lround(xToHop(pt.x, grid))));
+            const int newEnd = juce::jlimit(note->startHop + 2, maxH, snapHopToHostGrid(static_cast<int>(std::lround(xToHop(pt.x, grid)))));
             // Problem #3 Fix: Linked Boundary Time-Warping (Alt + Right-Edge Drag stretches/compresses next note):
             if (e.mods.isAltDown())
             {

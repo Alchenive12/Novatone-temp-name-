@@ -52,6 +52,12 @@ public:
     void setSnapToScale(bool shouldSnap) noexcept;
     bool isSnapToScale() const noexcept { return snapToScaleEnabled; }
 
+    /** Snap note slices / edge trims to the DAW's 1/16 grid. Off by default. */
+    void setSnapToHostGrid(bool shouldSnap) noexcept { snapToGridEnabled = shouldSnap; repaint(); }
+
+    /** Clip mode: move the preview playhead (and the view) back to the clip start. */
+    void seekClipToStart();
+
     void setAutoScroll(bool shouldFollow) noexcept;
     bool isAutoScroll() const noexcept { return autoScrollEnabled; }
 
@@ -226,6 +232,8 @@ private:
     const NewtoneNoteBlock* findNoteById(int id) const noexcept;
 
     void splitNoteAtHop(int noteIndex, int splitHop);
+    double hopToHostPpq(int hop) const noexcept;
+    int    snapHopToHostGrid(int hop) const noexcept;
     void joinNoteWithNext(int noteIndex);
 
     void paintPianoRollRuler(juce::Graphics& g, juce::Rectangle<float> area, uint16_t scaleMask);
@@ -259,6 +267,7 @@ private:
     ToolMode   currentToolMode       = ToolMode::StandardEdit;
     DragAction currentDragAction     = DragAction::None;
     bool       snapToScaleEnabled    = true;
+    bool       snapToGridEnabled     = false;
     bool       autoScrollEnabled     = true;
     bool       polyphonicModeEnabled = false;
     bool       midiCleanModeEnabled  = false;
