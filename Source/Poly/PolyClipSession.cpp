@@ -182,20 +182,24 @@ bool ClipSession::playback (juce::AudioBuffer<float>& io, std::optional<juce::in
 
     bool replaced = false;
     const int n = io.getNumSamples();
-    if (rb != nullptr && rb->audio.getNumSamples() > 0 && std::abs (clipRate.load() - processRate) < 0.5 && ! recording.load())
+    if (rb != nullptr && rb->audio.getNumSamples() > 0 && processRate > 0.0 && ! recording.load())
     {
+        // Clip positions are in clip-rate samples; the session may run at another rate (project reopened
+        // at a different sample rate), so step through the clip at clipRate / processRate.
+        const double step = clipRate.load() / processRate;
+        const bool sameRate = std::abs (step - 1.0) < 1.0e-6;
         juce::int64 k0 = 0;
         bool hasPos = false;
-        if (hostPlaying && hostSample.has_value())
+        if (hostPlaying && hostSample.has_value() && ! independent.load())
         {
-            k0 = *hostSample - latency - clipStart.load();
+            k0 = (juce::int64) std::llround ((double) (*hostSample - latency) * step) - clipStart.load();
             hasPos = true;
             previewPlaying.store (false);
         }
         else if (previewPlaying.load())
         {
             k0 = previewPos.load();
-            previewPos.store (k0 + n);
+            previewPos.store (k0 + (juce::int64) std::llround (n * step));
             if (k0 >= rb->audio.getNumSamples()) previewPlaying.store (false);
             hasPos = true;
         }
@@ -204,18 +208,39 @@ bool ClipSession::playback (juce::AudioBuffer<float>& io, std::optional<juce::in
         {
             const int len = rb->audio.getNumSamples();
             const int srcCh = rb->audio.getNumChannels();
-            const int a = (int) std::clamp<juce::int64> (-k0, 0, n);
-            const int b = (int) std::clamp<juce::int64> ((juce::int64) len - k0, 0, n);
-            if (b > a)
+            if (sameRate)
             {
-                for (int ch = 0; ch < io.getNumChannels(); ++ch)
+                const int a = (int) std::clamp<juce::int64> (-k0, 0, n);
+                const int b = (int) std::clamp<juce::int64> ((juce::int64) len - k0, 0, n);
+                if (b > a)
                 {
-                    const int sc = juce::jmin (ch, srcCh - 1);
-                    io.copyFrom (ch, a, rb->audio, sc, (int) (k0 + a), b - a);
+                    for (int ch = 0; ch < io.getNumChannels(); ++ch)
+                    {
+                        const int sc = juce::jmin (ch, srcCh - 1);
+                        io.copyFrom (ch, a, rb->audio, sc, (int) (k0 + a), b - a);
+                    }
+                    replaced = true;
                 }
-                replaced = true;
             }
-            playPosition.store (k0 + n / 2 >= 0 && k0 + n / 2 < len ? k0 + n / 2 : -1);
+            else
+            {
+                // shortcut: linear interpolation when rates differ; good for playback, re-record for best quality.
+                for (int i = 0; i < n; ++i)
+                {
+                    const double pos = (double) k0 + i * step;
+                    if (pos < 0.0 || pos >= (double) (len - 1)) continue;
+                    const int i0 = (int) pos;
+                    const float fr = (float) (pos - i0);
+                    for (int ch = 0; ch < io.getNumChannels(); ++ch)
+                    {
+                        const auto* src = rb->audio.getReadPointer (juce::jmin (ch, srcCh - 1));
+                        io.setSample (ch, i, src[i0] + fr * (src[i0 + 1] - src[i0]));
+                    }
+                    replaced = true;
+                }
+            }
+            const juce::int64 mid = k0 + (juce::int64) (n * step / 2);
+            playPosition.store (mid >= 0 && mid < len ? mid : -1);
         }
         else
             playPosition.store (-1);
@@ -263,7 +288,7 @@ void ClipSession::startRecording()
     status.store (Status::recording);
     recording.store (true, std::memory_order_release);
     chunkTopUp.startTimerHz (10);
-    if (onClipChanged) onClipChanged();
+    notifyChanged();
 }
 
 void ClipSession::stopRecording()
@@ -276,7 +301,7 @@ void ClipSession::stopRecording()
     if (! assembleRecording())
     {
         status.store (hasClip() ? Status::ready : Status::empty);
-        if (onClipChanged) onClipChanged();
+        notifyChanged();
         return;
     }
     for (auto& c : chunks) c.store (nullptr);
@@ -297,6 +322,7 @@ bool ClipSession::assembleRecording()
         audio->setSample (1, (int) i, p != nullptr ? p[off + 1] : 0.0f);
     }
 
+    {
     const std::lock_guard<std::mutex> g (dataLock);
     notesGeneration++;            // cancels any running analysis/render
     clip = audio;
@@ -310,7 +336,9 @@ bool ClipSession::assembleRecording()
     status.store (Status::analysing);
     progress.store (0.0f);
     requestWork();
-    if (onClipChanged) onClipChanged();
+    }
+    // Outside dataLock: the callback reads the session (re-locking std::mutex aborts on MSVC).
+    notifyChanged();
     return true;
 }
 
@@ -344,6 +372,7 @@ bool ClipSession::loadFile (const juce::File& file, juce::int64 timelineStart)
         res = std::move (raw);
 
     setPreviewPlaying (false);
+    {
     const std::lock_guard<std::mutex> g (dataLock);
     notesGeneration++;
     clip = std::make_shared<juce::AudioBuffer<float>> (std::move (res));
@@ -357,7 +386,9 @@ bool ClipSession::loadFile (const juce::File& file, juce::int64 timelineStart)
     status.store (Status::analysing);
     progress.store (0.0f);
     requestWork();
-    if (onClipChanged) onClipChanged();
+    }
+    // Outside dataLock: the callback reads the session (re-locking std::mutex aborts on MSVC).
+    notifyChanged();
     return true;
 }
 
@@ -377,11 +408,12 @@ void ClipSession::clear()
         analysisRequested = false;
     }
     status.store (Status::empty);
-    if (onClipChanged) onClipChanged();
+    notifyChanged();
 }
 
 bool ClipSession::exportRender (const juce::File& file)
 {
+    const std::lock_guard<std::mutex> g (publishLock); // the worker can't swap/free the buffer while we write it
     RenderBuffer* rb = active.load();
     if (rb == nullptr) return false;
     file.deleteFile();
@@ -437,7 +469,6 @@ juce::String ClipSession::getStatusText() const
         case Status::analysing: return "Analysing clip " + juce::String (juce::roundToInt (progress.load() * 100.0f)) + "%";
         case Status::ready:
         {
-            if (std::abs (clipRate.load() - processRate) > 0.5) return "Clip was recorded at a different sample rate";
             const std::lock_guard<std::mutex> g (dataLock);
             return "Clip " + mmss ((double) clipLength.load() / clipRate.load()) + ", " + juce::String ((int) notes.size()) + " notes";
         }
@@ -449,6 +480,13 @@ juce::String ClipSession::getStatusText() const
 
 void ClipSession::requestWork() { workEvent.signal(); }
 
+void ClipSession::notifyChanged()
+{
+    // The host may restore state (fromValueTree / clear) off the message thread; the callback touches the GUI.
+    if (juce::MessageManager::existsAndIsCurrentThread()) { if (onClipChanged) onClipChanged(); }
+    else triggerAsyncUpdate();
+}
+
 void ClipSession::handleAsyncUpdate()
 {
     if (onClipChanged) onClipChanged();
@@ -458,7 +496,6 @@ void ClipSession::handleAsyncUpdate()
 // Rendered-buffer swap (worker or message thread; never the audio thread)
 void ClipSession::publish (std::unique_ptr<RenderBuffer> rb)
 {
-    static std::mutex publishLock;
     const std::lock_guard<std::mutex> g (publishLock);
     auto old = std::move (ownedActive);
     ownedActive = std::move (rb);
@@ -606,7 +643,7 @@ void ClipSession::fromValueTree (const juce::ValueTree& t)
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (clipFolder().getChildFile (fileName)));
-    if (reader == nullptr) { clear(); status.store (Status::error); if (onClipChanged) onClipChanged(); return; }
+    if (reader == nullptr) { clear(); status.store (Status::error); notifyChanged(); return; }
 
     juce::AudioBuffer<float> audio ((int) reader->numChannels, (int) reader->lengthInSamples);
     reader->read (&audio, 0, audio.getNumSamples(), 0, true, true);
@@ -636,6 +673,6 @@ void ClipSession::fromValueTree (const juce::ValueTree& t)
     }
     status.store (Status::ready);
     requestWork();
-    if (onClipChanged) onClipChanged();
+    notifyChanged();
 }
 } // namespace Poly

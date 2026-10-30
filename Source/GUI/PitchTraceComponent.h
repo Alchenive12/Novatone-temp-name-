@@ -52,6 +52,17 @@ public:
     void setSnapToScale(bool shouldSnap) noexcept;
     bool isSnapToScale() const noexcept { return snapToScaleEnabled; }
 
+    /** Snap note slices / edge trims to the DAW's 1/16 grid. Off by default. */
+    void setSnapToHostGrid(bool shouldSnap) noexcept { snapToGridEnabled = shouldSnap; repaint(); }
+
+    /** Preview transport for the loaded clip: Poly = clip session, Mono = dropped/loaded file. */
+    bool hasPreviewClip() const;
+    void setPreviewPlaying(bool shouldPlay);
+    /** Moves the preview playhead (and the view) back to the clip start. */
+    void seekClipToStart();
+    /** Independent: preview ignores the DAW transport/position (plays only from Play / Stop). */
+    void setIndependentPlay(bool independent);
+
     void setAutoScroll(bool shouldFollow) noexcept;
     bool isAutoScroll() const noexcept { return autoScrollEnabled; }
 
@@ -226,6 +237,8 @@ private:
     const NewtoneNoteBlock* findNoteById(int id) const noexcept;
 
     void splitNoteAtHop(int noteIndex, int splitHop);
+    double hopToHostPpq(int hop) const noexcept;
+    int    snapHopToHostGrid(int hop) const noexcept;
     void joinNoteWithNext(int noteIndex);
 
     void paintPianoRollRuler(juce::Graphics& g, juce::Rectangle<float> area, uint16_t scaleMask);
@@ -240,8 +253,16 @@ private:
     std::vector<TimelineHop> timeline;
     std::vector<NewtoneNoteBlock> notes;
     std::vector<ReferenceGhostNote> referenceGhostNotes;
-    std::vector<std::vector<NewtoneNoteBlock>> undoStack;
-    std::vector<std::vector<NewtoneNoteBlock>> redoStack;
+    /** Undo state: the notes plus the freehand Draw curve (stored per hop on the timeline). */
+    struct EditSnapshot
+    {
+        std::vector<NewtoneNoteBlock> notes;
+        std::vector<float> drawnMidi; // per hop; NaN = not drawn
+    };
+    EditSnapshot captureSnapshot() const;
+    void restoreSnapshot(EditSnapshot&& s);
+    std::vector<EditSnapshot> undoStack;
+    std::vector<EditSnapshot> redoStack;
     int nextNoteId = 1;
 
     static constexpr int   maxTimelineHops  = 4096; // ~45 seconds at 11 ms hop
@@ -259,6 +280,7 @@ private:
     ToolMode   currentToolMode       = ToolMode::StandardEdit;
     DragAction currentDragAction     = DragAction::None;
     bool       snapToScaleEnabled    = true;
+    bool       snapToGridEnabled     = false;
     bool       autoScrollEnabled     = true;
     bool       polyphonicModeEnabled = false;
     bool       midiCleanModeEnabled  = false;
@@ -297,6 +319,8 @@ private:
     const void* lastImportedAnalysis = nullptr;
     int  clipHopSize  = 512;
     int  clipPlayHop  = -1;
+    int  lastFilePlayHop = -1;
+    bool loadingSample = false;   // Mono file load in progress (loading screen)
     int  lastClipStatus = -1;
 
     juce::AudioBuffer<float> loadedAudioClip;

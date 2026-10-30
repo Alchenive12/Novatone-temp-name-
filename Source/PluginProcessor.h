@@ -48,6 +48,9 @@ public:
     void releaseResources() override;
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    /** Mono mode Play: replaces the input with the loaded clip (see PitchTraceQueue::MonoPreview). */
+    void renderMonoPreview(juce::AudioBuffer<float>&);
+    void clearMidiState();
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override;
@@ -175,6 +178,7 @@ private:
 
     HarmonyEngine harmony;
     std::array<bool, 128> midiHeld {};
+    int preparedBlockSize = 0;
     HarmonyExporter harmonyExporter;
     HarmonyExporter choirRecorder { 9 };   // lead + 8 harmony voices, for Choir
     ChoirSession choir;

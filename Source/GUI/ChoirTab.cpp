@@ -48,7 +48,7 @@ ChoirTab::Row::Row (ChoirTab& o, int i) : owner (o), index (i)
     mute.onClick = [this] { owner.choir.strip (index).mute.store (mute.getToggleState()); owner.choir.saveMix(); };
     solo.onClick = [this] { owner.choir.strip (index).solo.store (solo.getToggleState()); owner.choir.saveMix(); };
     remove.setTooltip ("Remove this singer");
-    remove.onClick = [this] { owner.choir.removeStrip (index); juce::MessageManager::callAsync ([o = &owner] { o->rebuildRows(); }); };
+    remove.onClick = [this] { owner.choir.removeStrip (index); juce::MessageManager::callAsync ([o = juce::Component::SafePointer<ChoirTab> (&owner)] { if (o != nullptr) o->rebuildRows(); }); };
     for (auto* c : std::initializer_list<juce::Component*> { &prev, &voiceBox, &next, &level, &pan, &mute, &solo, &remove }) addAndMakeVisible (c);
     update();
 }
@@ -153,7 +153,7 @@ ChoirTab::TakeHeader::TakeHeader (ChoirTab& o, int t) : owner (o), take (t)
     {
         const int sel = moveBox.getSelectedId();
         auto target = moveBox.getText();
-        auto* o2 = &owner; const int tk = take;
+        juce::Component::SafePointer<ChoirTab> o2 (&owner); const int tk = take;
         if (sel == 1000)
         {
             auto* w = new juce::AlertWindow ("Move take", "New group name:", juce::MessageBoxIconType::NoIcon);
@@ -161,11 +161,11 @@ ChoirTab::TakeHeader::TakeHeader (ChoirTab& o, int t) : owner (o), take (t)
             w->addButton ("Move", 1); w->addButton ("Cancel", 0);
             w->enterModalState (true, juce::ModalCallbackFunction::create ([w, o2, tk] (int r)
             {
-                if (r == 1) { o2->choir.moveTake (tk, w->getTextEditorContents ("name")); juce::MessageManager::callAsync ([o2] { o2->rebuildRows(); }); }
+                if (r == 1 && o2 != nullptr) { o2->choir.moveTake (tk, w->getTextEditorContents ("name")); juce::MessageManager::callAsync ([o2] { if (o2 != nullptr) o2->rebuildRows(); }); }
             }), true);
             return;
         }
-        if (sel > 0) juce::MessageManager::callAsync ([o2, tk, target] { o2->choir.moveTake (tk, target); o2->rebuildRows(); });
+        if (sel > 0) juce::MessageManager::callAsync ([o2, tk, target] { if (o2 != nullptr) { o2->choir.moveTake (tk, target); o2->rebuildRows(); } });
     };
     partBox.setTextWhenNothingSelected ("Part");
     for (int p : owner.choir.take (take).parts) partBox.addItem ("Part " + juce::String (p), p);
@@ -175,7 +175,7 @@ ChoirTab::TakeHeader::TakeHeader (ChoirTab& o, int t) : owner (o), take (t)
         if (const int p = partBox.getSelectedId(); p > 0)
         {
             owner.choir.addStrip (take, p, "original");
-            juce::MessageManager::callAsync ([o2 = &owner] { o2->rebuildRows(); });
+            juce::MessageManager::callAsync ([o2 = juce::Component::SafePointer<ChoirTab> (&owner)] { if (o2 != nullptr) o2->rebuildRows(); });
         }
     };
     for (auto* c : std::initializer_list<juce::Component*> { &moveBox, &partBox, &addButton }) addAndMakeVisible (c);
@@ -222,9 +222,9 @@ ChoirTab::ChoirTab (juce::AudioProcessorValueTreeState& s, const HarmonyEngine& 
         auto* w = new juce::AlertWindow ("New group", "Name:", juce::MessageBoxIconType::NoIcon);
         w->addTextEditor ("name", "Group " + juce::String (ChoirSession::groupNames().size() + 1));
         w->addButton ("Create", 1); w->addButton ("Cancel", 0);
-        w->enterModalState (true, juce::ModalCallbackFunction::create ([this, w] (int res)
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([safe = juce::Component::SafePointer<ChoirTab> (this), w] (int res)
         {
-            if (res == 1) { choir.saveMix(); choir.newGroup (w->getTextEditorContents ("name")); rebuildRows(); }
+            if (res == 1 && safe != nullptr) { safe->choir.saveMix(); safe->choir.newGroup (w->getTextEditorContents ("name")); safe->rebuildRows(); }
         }), true);
     };
     openButton.setTooltip ("Open a group folder from anywhere");

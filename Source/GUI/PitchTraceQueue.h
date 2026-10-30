@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -306,9 +307,34 @@ public:
     std::atomic<bool>  globalMidiCleanMode { false }; ///< True = Instrument MIDI Clean & Denoise Mode
     std::atomic<uint16_t> activeScaleMask { 0x0AB5 }; // C Major default
     std::atomic<bool>  snapToScale       { true };
+    std::atomic<double> hostBpm          { 120.0 }; ///< Latest host tempo (clip-mode DAW grid).
     std::atomic<bool>  autoScroll        { true };
     std::atomic<bool>  replayMode        { false };
     std::atomic<int>   currentPlayheadHop { 0 };
+
+    /** Mono mode: plays the dropped/loaded file inside the plugin (Play / Stop), replacing the input. */
+    struct MonoPreview
+    {
+        juce::SpinLock lock;                         // GUI swaps the clip; audio thread only try-locks
+        std::shared_ptr<const juce::AudioBuffer<float>> clip;
+        double clipRate = 48000.0;
+        int    hopSamples = 512;                     // clip-rate samples per roll hop
+        std::atomic<bool>   playing { false };
+        std::atomic<double> pos { 0.0 };             // clip-rate samples
+
+        void setClip (const juce::AudioBuffer<float>& b, double rate, int hop)
+        {
+            auto c = std::make_shared<const juce::AudioBuffer<float>> (b);
+            playing.store (false);
+            const juce::SpinLock::ScopedLockType sl (lock);
+            clip = std::move (c); clipRate = rate; hopSamples = hop; pos.store (0.0);
+        }
+        void clear() { playing.store (false); const juce::SpinLock::ScopedLockType sl (lock); clip.reset(); }
+        bool hasClip() { const juce::SpinLock::ScopedLockType sl (lock); return clip != nullptr; }
+    };
+    MonoPreview monoPreview;
+    /** Clip preview plays from its own playhead and ignores the host's transport and position. */
+    std::atomic<bool> independentPlay { false };
     std::atomic<int>   vocalRangeMode     { 0 }; ///< 0=Full, 1=Soprano, 2=Alto, 3=Tenor, 4=Bass
 
     // Live MIDI Input state (written by audio thread when MIDI notes arrive, read by GUI/Engine):
