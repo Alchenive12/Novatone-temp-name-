@@ -125,6 +125,8 @@ namespace Poly
         void requestWork();
         bool assembleRecording();
         void publish (std::unique_ptr<RenderBuffer> rb);
+        void notifyChanged();
+        std::mutex publishLock;
         static juce::File clipFolder();
 
         // ---- capture (chunk pool) ----

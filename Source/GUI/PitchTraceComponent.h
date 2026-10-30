@@ -253,8 +253,16 @@ private:
     std::vector<TimelineHop> timeline;
     std::vector<NewtoneNoteBlock> notes;
     std::vector<ReferenceGhostNote> referenceGhostNotes;
-    std::vector<std::vector<NewtoneNoteBlock>> undoStack;
-    std::vector<std::vector<NewtoneNoteBlock>> redoStack;
+    /** Undo state: the notes plus the freehand Draw curve (stored per hop on the timeline). */
+    struct EditSnapshot
+    {
+        std::vector<NewtoneNoteBlock> notes;
+        std::vector<float> drawnMidi; // per hop; NaN = not drawn
+    };
+    EditSnapshot captureSnapshot() const;
+    void restoreSnapshot(EditSnapshot&& s);
+    std::vector<EditSnapshot> undoStack;
+    std::vector<EditSnapshot> redoStack;
     int nextNoteId = 1;
 
     static constexpr int   maxTimelineHops  = 4096; // ~45 seconds at 11 ms hop

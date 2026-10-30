@@ -339,6 +339,8 @@ void NovaToneAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
     harmonyDry.setSize((int)spec.numChannels, samplesPerBlock);
     alterEngine.prepare(spec);
     lastPublishedHopIndex = 0;
+    clearMidiState();
+    preparedBlockSize = samplesPerBlock;
 
     for (auto* g : { &inputGain, &outputGain })
     {
@@ -361,6 +363,15 @@ void NovaToneAudioProcessor::releaseResources()
     tuneEngine.reset();
     alterEngine.reset();
     lastPublishedHopIndex = 0;
+    clearMidiState();
+}
+
+void NovaToneAudioProcessor::clearMidiState()
+{
+    heldMidiNotes.fill(false);
+    midiHeld.fill(false);
+    activeOutputMidiNotes.fill(false);
+    lastActiveMidiNote = -1;
 }
 
 uint16_t NovaToneAudioProcessor::packScaleDegreeMask() const noexcept
@@ -549,6 +560,23 @@ void NovaToneAudioProcessor::renderMonoPreview(juce::AudioBuffer<float>& buffer)
 
 void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, juce::MidiBuffer& midiMessages)
 {
+    // Engines size their scratch buffers to prepareToPlay's block size; some hosts send more.
+    if (preparedBlockSize > 0 && fullBuffer.getNumSamples() > preparedBlockSize)
+    {
+        // shortcut: incoming MIDI goes to the first chunk and later chunks' MIDI output lands at their own start
+        // offset 0; fine for note-level MIDI, revisit if sample-accurate MIDI matters.
+        juce::MidiBuffer rest;
+        for (int start = 0; start < fullBuffer.getNumSamples(); start += preparedBlockSize)
+        {
+            const int len = juce::jmin(preparedBlockSize, fullBuffer.getNumSamples() - start);
+            juce::AudioBuffer<float> chunk(fullBuffer.getArrayOfWritePointers(), fullBuffer.getNumChannels(), start, len);
+            juce::MidiBuffer& m = start == 0 ? midiMessages : rest;
+            if (start > 0) rest.clear();
+            processBlock(chunk, m);
+            if (start > 0) midiMessages.addEvents(rest, 0, len, start);
+        }
+        return;
+    }
     juce::ScopedNoDenormals noDenormals;
 
     // Main bus only from here on; the sidechain (if the host connected one) feeds the Harmony tab.
@@ -717,6 +745,15 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
     }
     pitchQueue.hostBpm.store(bpm, std::memory_order_relaxed);
 
+    // MIDI clean turned off / Tune bypassed / Poly: the block below stops running, so release its notes now.
+    if (! tuneEngine.isMidiCleanModeEnabled() || tuneBypassed)
+        for (int m = 0; m < 128; ++m)
+            if (activeOutputMidiNotes[(size_t)m])
+            {
+                midiMessages.addEvent(juce::MidiMessage::noteOff(1, m), 0);
+                activeOutputMidiNotes[(size_t)m] = false;
+            }
+
     const int currentHopIdx = tuneEngine.getCurrentHopIndex();
     if (currentHopIdx == lastPublishedHopIndex)
         return;
@@ -807,7 +844,9 @@ void NovaToneAudioProcessor::setStateInformation(const void* data, int sizeInByt
         applyStateGuarded(tree);
         juce::MessageManager::callAsync([this, choirFolder, alive = juce::WeakReference<NovaToneAudioProcessor>(this)]
         {
-            if (alive != nullptr && choirFolder.isNotEmpty()) choir.open(juce::File(choirFolder));
+            if (alive == nullptr) return;
+            if (choirFolder.isNotEmpty()) choir.open(juce::File(choirFolder));
+            else choir.close();
         });
         if (clipTree.isValid())
             polyClip.fromValueTree(clipTree);

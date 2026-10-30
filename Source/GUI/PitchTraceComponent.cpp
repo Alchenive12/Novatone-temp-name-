@@ -260,9 +260,29 @@ int PitchTraceComponent::snapMidiToScale(float midiNote, uint16_t scaleMask) con
 //==============================================================================
 // Undo / Redo & Selected-Note Inspector API
 //==============================================================================
+PitchTraceComponent::EditSnapshot PitchTraceComponent::captureSnapshot() const
+{
+    EditSnapshot s { notes, {} };
+    s.drawnMidi.reserve(timeline.size());
+    for (const auto& th : timeline)
+        s.drawnMidi.push_back(th.hasCustomPitch ? th.customMidi : std::numeric_limits<float>::quiet_NaN());
+    return s;
+}
+
+void PitchTraceComponent::restoreSnapshot(EditSnapshot&& s)
+{
+    notes = std::move(s.notes);
+    for (size_t h = 0; h < timeline.size(); ++h)
+    {
+        const float m = h < s.drawnMidi.size() ? s.drawnMidi[h] : std::numeric_limits<float>::quiet_NaN();
+        timeline[h].hasCustomPitch = ! std::isnan(m);
+        timeline[h].customMidi = std::isnan(m) ? 0.0f : m;
+    }
+}
+
 void PitchTraceComponent::pushUndoSnapshot()
 {
-    undoStack.push_back(notes);
+    undoStack.push_back(captureSnapshot());
     if (undoStack.size() > maxUndoSteps)
         undoStack.erase(undoStack.begin());
     redoStack.clear();
@@ -293,8 +313,8 @@ void PitchTraceComponent::undo()
     if (undoStack.empty())
         return;
 
-    redoStack.push_back(notes);
-    notes = std::move(undoStack.back());
+    redoStack.push_back(captureSnapshot());
+    restoreSnapshot(std::move(undoStack.back()));
     undoStack.pop_back();
     relinkTimelineToNotes();
     syncActiveOverrideToEngine();
@@ -307,8 +327,8 @@ void PitchTraceComponent::redo()
     if (redoStack.empty())
         return;
 
-    undoStack.push_back(notes);
-    notes = std::move(redoStack.back());
+    undoStack.push_back(captureSnapshot());
+    restoreSnapshot(std::move(redoStack.back()));
     redoStack.pop_back();
     relinkTimelineToNotes();
     syncActiveOverrideToEngine();
@@ -4110,7 +4130,7 @@ void PitchTraceComponent::promptExportWavFile()
             if (outFile == juce::File()) return;
 
             const double sr = (safeThis->loadedAudioSampleRate > 0.0) ? safeThis->loadedAudioSampleRate : 48000.0;
-            const int hopSize = 512;
+            const int hopSize = safeThis->queue.monoPreview.hopSamples; // same hop the file was analysed with
             const int numHops = static_cast<int>(safeThis->timeline.size());
             if (numHops <= 0) return;
 
