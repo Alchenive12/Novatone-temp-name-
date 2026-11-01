@@ -317,6 +317,8 @@ public:
         vibratoTracker.reset();
 
         planner.reset();
+        dryRingWrite = 0;
+        lastHopDry = true;
         smoothRing.clear();
         smoothWritePos = 0;
         sibilantDryRing.clear();
@@ -439,7 +441,7 @@ public:
                 delaySubBlock(sub);
                 const double grainTime = static_cast<double> (inputCounter - smoothDelaySamples - shifter.getAnalysisLatencySamples() - (hopSize / 2) + smoothTrimSamples);
                 const float delayedHintHz = planner.pitchHintAt(static_cast<double> (inputCounter - smoothDelaySamples));
-                correction = (delayedHintHz <= 0.0f) ? 0.0f : planner.correctionAt(grainTime);
+                correction = (delayedHintHz <= 0.0f || isDryAt(grainTime)) ? 0.0f : planner.correctionAt(grainTime);
                 shifter.setPeriodHint(delayedHintHz);
             }
             else if (currentlySibilant)
@@ -639,6 +641,18 @@ public:
     bool  isVoiced()              const noexcept { return currentlyVoiced; }
     bool  isSibilant()            const noexcept { return currentlySibilant; }
     int   getCurrentHopIndex()    const noexcept { return hopCounter; }
+
+    /** Lookahead path: was the hop at `t` (input samples) dry? The planner smooths its curve, which nudged
+        dry notes by up to ~0.2 st; dry hops get exactly 0 correction instead. */
+    bool isDryAt(double t) const noexcept
+    {
+        for (int64_t i = dryRingWrite - 1; i >= std::max<int64_t> (0, dryRingWrite - dryRingSize); --i)
+        {
+            const auto& e = dryRing[(size_t) (i & (dryRingSize - 1))];
+            if (e.time <= t) return e.dry;
+        }
+        return lastHopDry;
+    }
     float getAppliedCorrectionSemitones() const noexcept { return appliedCorrection; }
 
 private:
@@ -691,6 +705,7 @@ private:
             const float target = lastCorrectedHz > 0.0f ? Quantizer::hzToMidi(lastCorrectedHz) : 0.0f;
             planner.push(inputCounter - windowSize / 2, v, v ? Quantizer::hzToMidi(lastUncorrectedHz) : 0.0f,
                          target, v ? lastUncorrectedHz : 0.0f);
+            dryRing[(size_t) (dryRingWrite++ & (dryRingSize - 1))] = { static_cast<double> (inputCounter - windowSize / 2), lastHopDry };
         }
     }
 
@@ -902,6 +917,7 @@ private:
                           && centerAmount * noteCenterMult < 0.002f && smoothedCenterAmount * noteCenterMult < 0.002f
                           && std::abs(variationAmount * noteVarMult - 1.0f) < 0.01f
                           && getTargetHumanizeDrive() < 0.01f && smoothedHumanizeGate < 0.01f;
+        lastHopDry = dryNote;
         const float desiredMidi = dryNote ? detectedMidi : computeDesiredMidiAtHop(
             detectedMidi, targetMidi, phraseOnset, noteCenterMult, noteVarMult, noteRampIn, mpmRes.clarity, centerAbsolute);
 
@@ -1283,6 +1299,11 @@ private:
     bool smoothEnabled   = false;
     bool humanizeEnabled = false;
     int  smoothDelaySamples = 0;
+    struct DryMark { double time = 0.0; bool dry = true; };
+    static constexpr int dryRingSize = 128;
+    std::array<DryMark, dryRingSize> dryRing {};
+    int64_t dryRingWrite = 0;
+    bool lastHopDry = true;
     int  smoothRingSize = 0;
     int  smoothWritePos = 0;
     int  smoothTrimSamples = 0;

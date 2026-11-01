@@ -335,6 +335,9 @@ private:
     int  clipPlayHop  = -1;
     int  lastFilePlayHop = -1;
     int  lastMonoTakeState = 0;
+    struct MonoRollState;
+    void stashMonoRoll();      // Mono roll -> queue.monoRollState
+    bool restoreMonoRoll();    // queue.monoRollState -> roll (false if there's nothing)
     /** Pitch a note is heard at (Mono: sung centre pulled toward its target by Center; pitch-edited notes land
         on target; Poly: target + cents). Note blocks are drawn there, so off-centre notes sit off the line. */
     float heardCentreMidi(const NewtoneNoteBlock& n) const noexcept;

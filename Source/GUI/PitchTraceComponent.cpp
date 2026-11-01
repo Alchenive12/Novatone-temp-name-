@@ -24,15 +24,73 @@ PitchTraceComponent::PitchTraceComponent(PitchTraceQueue& queueToDrain)
 
     currentCoachHint = "Sing, play, or drop an audio file here. Drag notes to retune them.";
 
-    // Seed an interactive vocal phrase so the NovaTone Piano Roll is immediately
-    // testable with Center / Sensitivity / Variation / Transition / Formant before live audio starts.
-    loadPhrasePreview();
+    // Reopened editor: bring back the Mono roll exactly as it was. Otherwise seed a demo phrase so the
+    // piano roll is testable with Center / Sensitivity / Variation / Transition / Formant before live audio starts.
+    if (! restoreMonoRoll())
+        loadPhrasePreview();
 
     startTimerHz(60);
 }
 
+struct PitchTraceComponent::MonoRollState
+{
+    std::vector<TimelineHop> timeline;
+    std::vector<NewtoneNoteBlock> notes;
+    juce::AudioBuffer<float> audio;
+    double rate = 48000.0;
+    int nextNoteId = 1, selectedNoteId = -1;
+    float viewStartHop = 0.0f, visibleHopsCount = 180.0f, viewCentreMidiNote = 60.0f;
+    bool clearedPreview = false;
+    float lastSensitivity = 0.65f;
+    uint16_t lastScaleMask = 0x0AB5;
+};
+
+void PitchTraceComponent::stashMonoRoll()
+{
+    if (polyphonicModeEnabled) return;   // the roll holds the Poly clip right now
+    auto st = std::make_shared<MonoRollState>();
+    st->timeline = timeline;
+    st->notes = notes;
+    st->audio.makeCopyOf(loadedAudioClip);
+    st->rate = loadedAudioSampleRate;
+    st->nextNoteId = nextNoteId;
+    st->selectedNoteId = selectedNoteId;
+    st->viewStartHop = viewStartHop;
+    st->visibleHopsCount = visibleHopsCount;
+    st->viewCentreMidiNote = viewCentreMidiNote;
+    st->clearedPreview = clearedPreviewOnFirstLiveVoice;
+    st->lastSensitivity = lastAppliedSensitivity;
+    st->lastScaleMask = lastAppliedScaleMask;
+    queue.monoRollState = st;
+}
+
+bool PitchTraceComponent::restoreMonoRoll()
+{
+    auto st = std::static_pointer_cast<MonoRollState>(queue.monoRollState);
+    if (st == nullptr) return false;
+    timeline = st->timeline;
+    notes = st->notes;
+    loadedAudioClip.makeCopyOf(st->audio);
+    loadedAudioSampleRate = st->rate;
+    nextNoteId = st->nextNoteId;
+    selectedNoteId = st->selectedNoteId;
+    viewStartHop = st->viewStartHop;
+    visibleHopsCount = st->visibleHopsCount;
+    viewCentreMidiNote = st->viewCentreMidiNote;
+    clearedPreviewOnFirstLiveVoice = st->clearedPreview;
+    lastAppliedSensitivity = st->lastSensitivity;
+    lastAppliedScaleMask = st->lastScaleMask;
+    undoStack.clear();
+    redoStack.clear();
+    shownCentre.clear();
+    syncActiveOverrideToEngine();   // re-publish this roll's edits to the tuner
+    repaint();
+    return true;
+}
+
 PitchTraceComponent::~PitchTraceComponent()
 {
+    stashMonoRoll();
     stopTimer();
     if (clipSession != nullptr)
         clipSession->onClipChanged = nullptr;
@@ -763,6 +821,9 @@ void PitchTraceComponent::setPolyphonicMode(bool polyEnabled)
     if (polyphonicModeEnabled == polyEnabled)
         return;
 
+    if (polyEnabled)
+        stashMonoRoll();   // keep the Mono roll while Poly borrows the piano roll
+
     polyphonicModeEnabled = polyEnabled;
     queue.globalPolyphonic.store(polyEnabled, std::memory_order_relaxed);
 
@@ -775,10 +836,16 @@ void PitchTraceComponent::setPolyphonicMode(bool polyEnabled)
             repaint();
             return;
         }
-        // Back to mono: the clip stays in the session; the roll returns to live tuning.
+        // Back to mono: the clip stays in the session; the Mono roll comes back as it was.
         timeline.clear();
         notes.clear();
         lastImportedAnalysis = nullptr;
+        if (restoreMonoRoll())
+        {
+            currentCoachHint = "Mono mode: solo-voice detection and tuning.";
+            if (onClipStatusChanged) onClipStatusChanged();
+            return;
+        }
         if (onClipStatusChanged) onClipStatusChanged();
     }
 

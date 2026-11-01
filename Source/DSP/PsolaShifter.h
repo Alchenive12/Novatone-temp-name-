@@ -217,9 +217,18 @@ private:
             double pos;
             if (lastGrain < 0)
             {
+                // First grain after a reset: start at the newest mark the synthesis frontier has reached.
+                // (It used to try mark[count-3] only, which stays ahead of the frontier for voiced input with
+                // short periods - after a reset mid-phrase, e.g. toggling Lookahead, the output stayed silent
+                // until a pause in the singing.)
                 if (markCount < 3)
                     return;
-                pos = mark(std::max<int64_t> (1, markCount - 3));
+                int64_t k0 = markCount - 2;
+                while (k0 >= std::max<int64_t> (1, minValidMark) && mark(k0) > frontier)
+                    --k0;
+                if (k0 < std::max<int64_t> (1, minValidMark))
+                    return;
+                pos = mark(k0);
             }
             else
             {

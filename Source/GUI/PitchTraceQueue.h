@@ -438,6 +438,9 @@ public:
     MonoTake monoTake;
     /** Clip preview plays from its own playhead and ignores the host's transport and position. */
     std::atomic<bool> independentPlay { false };
+    /** The Mono roll (loaded audio, notes, edits, view), kept here so it survives the editor closing
+        (FL closes plugin windows) and Poly <-> Mono switches. Opaque: owned by PitchTraceComponent. Message thread only. */
+    std::shared_ptr<void> monoRollState;
     std::atomic<int>   vocalRangeMode     { 0 }; ///< 0=Full, 1=Soprano, 2=Alto, 3=Tenor, 4=Bass
 
     // Live MIDI Input state (written by audio thread when MIDI notes arrive, read by GUI/Engine):

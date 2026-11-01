@@ -602,6 +602,101 @@ int main(int argc, char** argv)
         }
     }
 
+    if (argc > 8 && juce::String(argv[8]) == "lookahead")
+    {
+        for (auto kv : juce::StringArray::fromTokens(juce::SystemStats::getEnvironmentVariable("TEST_PARAMS", ""), ",", ""))
+            if (auto* prm = np->apvts.getParameter(kv.upToFirstOccurrenceOf("=", false, false)))
+                prm->setValueNotifyingHost(prm->convertTo0to1(kv.fromFirstOccurrenceOf("=", false, false).getFloatValue()));
+        std::unique_ptr<juce::AudioProcessorEditor> ed(proc->createEditor());
+        ed->setSize(w, h); ed->setVisible(true); pump(200);
+        const int toggles = juce::SystemStats::getEnvironmentVariable("TEST_TOGGLES", "1").getIntValue();
+        playHead.pos = 0;
+        for (int half = 0; half < 16; ++half)
+        {
+            if (half == 4 || (toggles > 1 && half == 10))
+                if (auto* p = np->apvts.getParameter("tune_lookahead"))
+                {
+                    const int before = proc->getLatencySamples();
+                    p->setValueNotifyingHost(p->getValue() > 0.5f ? 0.0f : 1.0f);
+                    pump(30);
+                    std::cout << "-- Lookahead " << (p->getValue() > 0.5f ? "ON" : "OFF") << " (latency " << before << " -> " << proc->getLatencySamples() << ")\n";
+                    if (juce::SystemStats::getEnvironmentVariable("TEST_REPREPARE", "0") == "1")
+                    { proc->releaseResources(); proc->prepareToPlay(48000.0, 512); std::cout << "-- host re-prepared\n"; }
+                }
+            double e = 0;
+            for (int b = 0; b < 47; ++b)
+            {
+                for (int i = 0; i < 512; ++i)
+                {
+                    const double t = (playHead.pos + i) / 48000.0;
+                    const double f = 220.0 * std::pow(2.0, (0.3 + 0.2 * std::sin(t * 2 * 3.14159 * 5.5)) / 12.0);
+                    double hs = 0; for (int hN = 1; hN <= 8; ++hN) hs += std::sin(hN * ph) / hN;
+                    ph += juce::MathConstants<double>::twoPi * f / 48000.0;
+                    buf.setSample(0, i, (float) (0.2 * hs)); buf.setSample(1, i, (float) (0.2 * hs));
+                }
+                playHead.playing = true;
+                proc->processBlock(buf, midi);
+                playHead.pos += 512;
+                int nans = 0;
+                for (int i = 0; i < 512; ++i) { const float y = buf.getSample(0, i); if (! std::isfinite(y)) ++nans; else e += y * y; }
+                if (nans > 0 && b % 47 == 0) std::cout << "[NaN/inf x" << nans << "] ";
+                if (b % 6 == 0) pump(5);
+            }
+            std::cout << "t=" << juce::String(half * 0.5, 1) << "s out " << juce::String(juce::Decibels::gainToDecibels((float) std::sqrt(e / (47 * 512))), 1) << " dB\n";
+        }
+        ed.reset(); proc->releaseResources(); return 0;
+    }
+
+    if (argc > 8 && juce::String(argv[8]) == "reopen")
+    {
+        auto& q = np->getPitchTraceQueue();
+        auto sing = [&](int blocks, bool hostPlays, float amp)
+        {
+            for (int b = 0; b < blocks; ++b)
+            {
+                for (int i = 0; i < 512; ++i)
+                {
+                    const double t = (playHead.pos + i) / 48000.0;
+                    const double f = 220.0 * std::pow(2.0, (2.0 * std::floor(t * 2.0)) / 12.0);
+                    double hs = 0; for (int hN = 1; hN <= 8; ++hN) hs += std::sin(hN * ph) / hN;
+                    ph += juce::MathConstants<double>::twoPi * f / 48000.0;
+                    buf.setSample(0, i, (float) (amp * hs)); buf.setSample(1, i, (float) (amp * hs));
+                }
+                playHead.playing = hostPlays;
+                proc->processBlock(buf, midi);
+                if (hostPlays) playHead.pos += 512;
+                if (b % 4 == 0) pump(5);
+            }
+        };
+        auto report = [&](const char* label, juce::AudioProcessorEditor& ed)
+        {
+            auto* r = findRoll(ed);
+            int edited = 0; for (auto& n : r->getNotesForTests()) if (n.pitchEdited) ++edited;
+            std::cout << label << ": hasClip=" << r->hasPreviewClip() << " hops=" << r->getTimelineSize()
+                      << " notes=" << r->getNotesForTests().size() << " pitch-edited=" << edited << "\n";
+        };
+        std::unique_ptr<juce::AudioProcessorEditor> ed(proc->createEditor());
+        ed->setSize(w, h); ed->setVisible(true); pump(200);
+        playHead.pos = 48000 * 4;
+        sing(94 * 4, true, 0.2f);
+        sing(4, false, 0.0f); pump(500);
+        auto* roll = findRoll(*ed);
+        roll->selectAdjacentNote(1); roll->transposeSelectedNote(2); pump(100);
+        report("after take + edit", *ed);
+        ed.reset(); pump(100);                       // FL closes the plugin window
+        playHead.pos = 0; sing(94 * 6, true, 0.2f);  // FL plays the song with the vocal track (input) while closed
+        sing(4, false, 0.0f);
+        ed.reset(proc->createEditor()); ed->setSize(w, h); ed->setVisible(true); pump(300);
+        report("reopened", *ed);
+        playHead.pos = 0; sing(94 * 3, true, 0.2f); sing(4, false, 0.0f); pump(300);
+        report("reopened + DAW played", *ed);
+        roll = findRoll(*ed);
+        roll->setPolyphonicMode(true); pump(200);
+        roll->setPolyphonicMode(false); pump(200);
+        report("after Poly -> Mono", *ed);
+        ed.reset(); proc->releaseResources(); return 0;
+    }
+
     if (argc > 8 && juce::String(argv[8]) == "centre")
     {
         std::unique_ptr<juce::AudioProcessorEditor> med(proc->createEditor());
