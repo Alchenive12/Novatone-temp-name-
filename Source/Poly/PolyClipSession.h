@@ -94,6 +94,9 @@ namespace Poly
         /** Song position (session-rate samples) of clip sample 0. */
         juce::int64 getClipStart() const noexcept { return clipStart.load(); }
 
+        /** True once a render of the current clip exists (playback can start). */
+        bool hasRender() const noexcept { return active.load() != nullptr; }
+
         /** True once the audible render reflects the latest notes. */
         bool isRenderCurrent() const
         {

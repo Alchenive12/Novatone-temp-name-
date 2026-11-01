@@ -55,8 +55,10 @@ void PitchTraceComponent::handleClipSessionChanged()
 {
     if (clipSession == nullptr) return;
     const int st = static_cast<int>(clipSession->getStatus());
-    const bool statusChanged = st != lastClipStatus;
+    const bool hasRender = clipSession->hasRender();
+    const bool statusChanged = st != lastClipStatus || hasRender != lastClipHadRender; // first render enables Play
     lastClipStatus = st;
+    lastClipHadRender = hasRender;
 
     if (isClipMode())
     {
@@ -610,7 +612,7 @@ void PitchTraceComponent::selectAdjacentNote(int direction)
 bool PitchTraceComponent::hasPreviewClip() const
 {
     if (isClipMode())
-        return clipSession->getStatus() == Poly::ClipSession::Status::ready;
+        return clipSession->getStatus() == Poly::ClipSession::Status::ready && clipSession->hasRender();
     return ! polyphonicModeEnabled && queue.monoPreview.hasClip();
 }
 
@@ -2044,9 +2046,14 @@ void PitchTraceComponent::timerCallback()
             : 0.0;
         double t = intervalStart;
 
+        // Silence with the DAW stopped (plugin just opened, nothing playing) must not grow the roll,
+        // or the view scrolls forever. Keep silent gaps only while the DAW plays or something is heard.
+        const bool hostPlays = queue.hostPlaying.load(std::memory_order_relaxed);
         for (const auto& data : popScratch)
         {
-            if (data.isVoiced || data.isSibilant || (!timeline.empty() && timeline.back().data.hopIndex > 0))
+            const bool continuing = !timeline.empty() && timeline.back().data.hopIndex > 0
+                                    && (hostPlays || data.rms > 0.002f);
+            if (data.isVoiced || data.isSibilant || continuing)
             {
                 appendHopToTimeline(data, t);
                 needsRepaint = true;
@@ -2891,7 +2898,9 @@ void PitchTraceComponent::paint(juce::Graphics& g)
         g.drawVerticalLine(juce::roundToInt(corner.getRight() - 1.0f), corner.getY(), corner.getBottom());
 
         // Loading screen while a new sample is read / analysed
-        const bool polyLoading = isClipMode() && clipSession->getStatus() == Poly::ClipSession::Status::analysing;
+        // Poly: analysing, or analysed but the first render (what you hear) isn't ready yet
+        const bool polyLoading = isClipMode() && (clipSession->getStatus() == Poly::ClipSession::Status::analysing
+                                 || (clipSession->getStatus() == Poly::ClipSession::Status::ready && ! clipSession->hasRender()));
         if (loadingSample || polyLoading)
         {
             g.setColour(graphBackground.withAlpha(0.82f));

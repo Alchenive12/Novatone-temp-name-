@@ -602,6 +602,91 @@ int main(int argc, char** argv)
         }
     }
 
+    if (argc > 8 && (juce::String(argv[8]) == "monoload" || juce::String(argv[8]) == "idle"))
+    {
+        std::unique_ptr<juce::AudioProcessorEditor> med(proc->createEditor());
+        med->setSize(w, h); med->setVisible(true);
+        auto* roll = findRoll(*med);
+        auto& q = np->getPitchTraceQueue();
+        juce::Random rng(7);
+        if (juce::String(argv[8]) == "idle")
+        {
+            // Plugin open, DAW stopped, silent input: nothing should move.
+            for (int sec = 0; sec < 6; ++sec)
+            {
+                for (int b = 0; b < 94; ++b) { buf.clear(); playHead.playing = false; proc->processBlock(buf, midi); if (b % 8 == 0) pump(5); }
+                pump(50);
+                std::cout << "idle t=" << sec + 1 << "s viewStart=" << roll->getViewStartHop() << " timeline=" << roll->getTimelineSize()
+                          << " playheadHop=" << q.currentPlayheadHop.load() << "\n";
+            }
+            save(*med, outDir.getChildFile("idle.png"), 1.0f);
+            med.reset(); proc->releaseResources(); return 0;
+        }
+        // Synthetic vocal: 1.4 s sung note, 0.6 s breath, repeated (16 s)
+        const double sr = 44100.0; const int N = (int) (juce::SystemStats::getEnvironmentVariable("TEST_LEN", "16").getDoubleValue() * sr);
+        juce::AudioBuffer<float> voc(1, N); double vph = 0;
+        const int notes[] = { 57, 60, 62, 64, 62, 60, 59, 57 };
+        for (int i = 0; i < N; ++i)
+        {
+            const double t = i / sr; const int k = (int) (t / 2.0); const double ph2 = std::fmod(t, 2.0);
+            float smp = 0.0f;
+            if (ph2 < 1.4)
+            {
+                const double f = 440.0 * std::pow(2.0, (notes[k % 8] - 69 + 0.2 * std::sin(t * 2 * 3.14159 * 5.5)) / 12.0);
+                vph += 2 * 3.14159265 * f / sr;
+                const double env = juce::jmin(1.0, ph2 / 0.05) * juce::jmin(1.0, (1.4 - ph2) / 0.05);
+                smp = (float) (env * (0.3 * std::sin(vph) + 0.15 * std::sin(2 * vph) + 0.08 * std::sin(3 * vph)));
+            }
+            else smp = 0.02f * (rng.nextFloat() * 2 - 1);
+            voc.setSample(0, i, smp);
+        }
+        const auto wav = outDir.getChildFile("synthvocal.wav"); wav.deleteFile();
+        {
+            std::unique_ptr<juce::AudioFormatWriter> wr(juce::WavAudioFormat().createWriterFor(new juce::FileOutputStream(wav), sr, 1, 24, {}, 0));
+            wr->writeFromAudioSampleBuffer(voc, 0, N);
+        }
+        for (auto kv : juce::StringArray::fromTokens(juce::SystemStats::getEnvironmentVariable("TEST_PARAMS", ""), ",", ""))
+            if (auto* prm = np->apvts.getParameter(kv.upToFirstOccurrenceOf("=", false, false)))
+                prm->setValueNotifyingHost(prm->convertTo0to1(kv.fromFirstOccurrenceOf("=", false, false).getFloatValue()));
+        pump(200);
+        const bool polyLoad = argc > 9 && juce::String(argv[9]) == "poly";
+        if (polyLoad)
+        {
+            if (auto* p = np->apvts.getParameter("tune_polyphonic")) p->setValueNotifyingHost(1.0f);
+            pump(300);
+        }
+        const auto tLoad = juce::Time::getMillisecondCounter();
+        roll->filesDropped(juce::StringArray(wav.getFullPathName()), 0, 0);
+        pump(300);
+        if (polyLoad)
+        {
+            auto& clip = np->getPolyClip();
+            while (! roll->hasPreviewClip() && juce::Time::getMillisecondCounter() - tLoad < 120000) pump(50);
+            std::cout << "poly ready after " << (juce::Time::getMillisecondCounter() - tLoad) << " ms, render current=" << clip.isRenderCurrent() << "\n";
+        }
+        std::cout << "loaded: hasClip=" << roll->hasPreviewClip() << "\n";
+        roll->setPreviewPlaying(true);
+        // Play 14 s on the plugin's own transport; report sung-part output level per 2 s phrase
+        const int phrases = juce::SystemStats::getEnvironmentVariable("TEST_PHRASES", "7").getIntValue();
+        for (int k = 0; k < phrases; ++k)
+        {
+            if (juce::SystemStats::getEnvironmentVariable("TEST_REALTIME", "0") == "1") pump(1900); // let the GUI/worker run like in a host
+            double sung = 0; int ns = 0; double br = 0; int nb = 0;
+            for (int b = 0; b < (int) (2.0 * 48000 / 512); ++b)
+            {
+                buf.clear(); playHead.playing = false; proc->processBlock(buf, midi);
+                const double clipT = polyLoad ? (double) np->getPolyClip().getPlayPosition() / 48000.0 : q.monoPreview.pos.load() / sr;
+                const double ph2 = std::fmod(clipT, 2.0);
+                double e = 0; for (int i = 0; i < 512; ++i) e += buf.getSample(0, i) * buf.getSample(0, i);
+                if (ph2 > 0.3 && ph2 < 1.3) { sung += e; ns += 512; } else if (ph2 > 1.6 && ph2 < 1.95) { br += e; nb += 512; }
+                if (b % 8 == 0) pump(5);
+            }
+            if (polyLoad) std::cout << "[render current=" << np->getPolyClip().isRenderCurrent() << " t=" << (juce::Time::getMillisecondCounter() - tLoad) << "ms] ";
+            std::cout << "phrase " << k << ": sung rms=" << std::sqrt(sung / juce::jmax(1, ns)) << " breath rms=" << std::sqrt(br / juce::jmax(1, nb)) << "\n";
+        }
+        med.reset(); proc->releaseResources(); return 0;
+    }
+
     if (argc > 8 && juce::String(argv[8]) == "monotake")
     {
         // ---- Mono take: record while the "DAW" plays, stop, then play it on NovaTone's own transport ----

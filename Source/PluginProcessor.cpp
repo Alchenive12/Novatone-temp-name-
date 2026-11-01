@@ -738,6 +738,7 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
             if (pos->getTimeInSamples().hasValue()) hostSample = *pos->getTimeInSamples();
         }
 
+    pitchQueue.hostPlaying.store(hostPlaying, std::memory_order_relaxed);
     captureMonoTake(buffer, hostSample, hostPlaying);   // raw input, before the preview replaces it
     renderMonoPreview(buffer, hostSample, hostPlaying);
     pushParametersToEngines();

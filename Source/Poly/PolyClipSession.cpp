@@ -372,6 +372,7 @@ bool ClipSession::loadFile (const juce::File& file, juce::int64 timelineStart)
         res = std::move (raw);
 
     setPreviewPlaying (false);
+    publish (nullptr);   // the previous clip's render must not play over the new clip
     {
     const std::lock_guard<std::mutex> g (dataLock);
     notesGeneration++;

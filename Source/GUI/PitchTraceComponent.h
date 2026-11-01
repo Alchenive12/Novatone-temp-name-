@@ -63,6 +63,8 @@ public:
     /** Independent: preview ignores the DAW transport/position (plays only from Play / Stop). */
     void setIndependentPlay(bool independent);
     bool isPreviewPlaying() const;
+    float getViewStartHop() const noexcept { return viewStartHop; }   // tests
+    int   getTimelineSize() const noexcept { return static_cast<int>(timeline.size()); }
     /** Space bar: stop / continue from where it stopped. */
     void togglePreviewPlaying();
 
@@ -329,6 +331,7 @@ private:
     int  clipPlayHop  = -1;
     int  lastFilePlayHop = -1;
     int  lastMonoTakeState = 0;
+    bool lastClipHadRender = false;
     void adoptMonoTake();          // finished take -> Mono clip (analysed like a dropped file)
     bool loadingSample = false;   // Mono file load in progress (loading screen)
     int  lastClipStatus = -1;
