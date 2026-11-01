@@ -109,6 +109,17 @@ public:
     void setHarmonyGainDb (float db) noexcept { harmonyGain = db <= -59.0f ? 0.0f : juce::Decibels::decibelsToGain (db); }
     void setLeadGainDb (float db) noexcept { leadGain = db <= -59.0f ? 0.0f : juce::Decibels::decibelsToGain (db); }
     void setUseSidechainChords (bool b) noexcept { useSidechain = b; }
+
+    /** "MIDI file" source: the chord sounding in the imported file at the current song position
+        (set every block by the processor). valid = false in gaps / outside the file -> key & scale. */
+    void setExternalChord (bool on, bool valid, uint16_t mask, int root, int quality) noexcept
+    {
+        externalMode = on;
+        extValid = valid && mask != 0;
+        extMask = mask;
+        extChord = (extValid && root >= 0) ? root * ChordTracker::numQualities + quality : -1;
+    }
+    bool isExternalMode() const noexcept { return externalMode; }
     void setScaleMask (uint16_t m) noexcept { scaleMask = m == 0 ? 0x0FFF : m; }
     void setKeyRoot (int pc) noexcept { keyRoot = ((pc % 12) + 12) % 12; }
     void setTotalLatency (int samples) noexcept { totalLatency = samples; }
@@ -256,7 +267,7 @@ public:
 
     //==========================================================================
     // GUI readouts (lock-free)
-    int   getChord() const noexcept { return chords.getChord(); }
+    int   getChord() const noexcept { return activeChord(); }
     float getSidechainLevel() const noexcept { return chords.getLevel(); }
     bool  isSidechainActive() const noexcept { return juce::Time::getMillisecondCounter() - lastSidechainMs.load() < 500 && chords.getLevel() > 1.0e-4f; }
     float getChroma (int pc) const noexcept { return chords.getChroma (pc); }
@@ -280,8 +291,17 @@ private:
         std::atomic<int> publishedNote { -1 };
     };
 
+    /** Chord in use: from the MIDI file, or detected on the sidechain; -1 = none (key & scale). */
+    int activeChord() const noexcept
+    {
+        if (externalMode) return extChord;
+        return useSidechain ? chords.getChord() : -1;
+    }
+
     uint16_t currentToneMask() const noexcept
     {
+        if (externalMode)
+            return extValid ? extMask : scaleMask;   // the file's actual notes, not a template
         if (useSidechain)
         {
             const int c = chords.getChord();
@@ -291,7 +311,7 @@ private:
     }
 
     /** True when harmonies follow the key's scale (no sidechain chord). */
-    bool scaleOnly() const noexcept { return ! (useSidechain && chords.getChord() >= 0); }
+    bool scaleOnly() const noexcept { return externalMode ? ! extValid : ! (useSidechain && chords.getChord() >= 0); }
 
     static int toneAbove (int note, uint16_t mask, int count) noexcept
     {
@@ -320,7 +340,7 @@ private:
     /** Root of the current chord (sidechain) or key, and whether it's a minor-type chord. */
     void currentRootQuality (uint16_t tones, int& root, bool& minorish) const noexcept
     {
-        const int c = useSidechain ? chords.getChord() : -1;
+        const int c = activeChord();
         if (c >= 0)
         {
             root = c / ChordTracker::numQualities;
@@ -366,7 +386,7 @@ private:
             case chordRoot:
             {
                 int root = 0;
-                if (useSidechain && chords.getChord() >= 0) root = chords.getChord() / ChordTracker::numQualities;
+                if (activeChord() >= 0) root = activeChord() / ChordTracker::numQualities;
                 else { for (int pc = 0; pc < 12; ++pc) if ((tones >> pc) & 1u) { root = pc; break; } }
                 int t = leadNote - 1;
                 while (((t % 12) + 12) % 12 != root) --t;
@@ -447,6 +467,9 @@ private:
 
     float humanize = 0.4f, harmonyGain = 1.0f, leadGain = 1.0f;
     bool useSidechain = true;
+    bool externalMode = false, extValid = false;
+    uint16_t extMask = 0;
+    int extChord = -1;
     uint16_t scaleMask = 0x0AB5;
     int keyRoot = 0;
     bool midiMode = false;

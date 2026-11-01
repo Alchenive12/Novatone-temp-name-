@@ -448,6 +448,20 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
     masterBar.setCentreComponent(&workstationView.getTunerComponent());
     workstationView.setClipSession(&p.getPolyClip());
 
+    // Harmony tab, "MIDI file" chords
+    auto& lane = harmonyView.getChordLane();
+    lane.hooks.load        = [&p](const juce::File& f, juce::String& err) { return p.loadHarmonyMidi(f, err); };
+    lane.hooks.clear       = [&p] { p.clearHarmonyMidi(); };
+    lane.hooks.track       = [&p] { return p.getHarmonyMidi(); };
+    lane.hooks.positionPpq = [&p] { return p.getHarmonyPositionPpq(); };
+    lane.hooks.moving      = [&p] { return p.isHarmonyPositionMoving(); };
+    lane.hooks.leadNotes   = [this, &p]
+    {
+        // The Mono clip's notes when there is one (exact), otherwise what was heard while the song played
+        auto notes = workstationView.leadNotesForAlignment(p.getPitchTraceQueue().hostBpm.load());
+        return notes.empty() ? p.getLeadHistory() : notes;
+    };
+
     setResizable(true, true);
     setResizeLimits(920, 700, 1920, 1200);
     setSize(1100, 800);

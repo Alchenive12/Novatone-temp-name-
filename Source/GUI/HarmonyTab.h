@@ -7,6 +7,7 @@
 #include "../Harmony/HarmonyEngine.h"
 #include "../Harmony/HarmonyExporter.h"
 #include "../Choir/ChoirSession.h"
+#include "ChordLane.h"
 
 /**
     Harmony tab: chord-aware harmony voices generated from the lead vocal, following the chords
@@ -27,6 +28,9 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void refreshTheme();
+
+    /** "MIDI file" chord source: import + line up with the lead (hooks set by the editor). */
+    ChordLane& getChordLane() noexcept { return chordLane; }
 
 private:
     void timerCallback() override;
@@ -127,6 +131,8 @@ private:
     void setParam (const juce::String& id, float plainValue);
     RotaryKnob mixKnob, leadKnob, humanizeKnob;
     ChoiceSelector sourceSelector;
+    ChordLane chordLane;
+    bool fileSource() const;
 
     juce::Rectangle<int> chordCard, keyboardCard, mixCard, helpArea;
     int   chord = -1;

@@ -698,6 +698,25 @@ bool PitchTraceComponent::isPreviewPlaying() const
     return queue.monoPreview.playing.load();
 }
 
+std::vector<MidiChordTrack::LeadNote> PitchTraceComponent::leadNotesForAlignment(double bpm) const
+{
+    std::vector<MidiChordTrack::LeadNote> out;
+    if (polyphonicModeEnabled || loadedAudioClip.getNumSamples() <= 0 || bpm <= 0.0) return out;
+    const auto& mp = queue.monoPreview;
+    const double hopSec = (double) juce::jmax(1, mp.hopSamples) / juce::jmax(1.0, mp.clipRate);
+    const juce::int64 songStart = mp.timelineStart.load();
+    const double startSec = songStart >= 0 ? (double) songStart / juce::jmax(1.0, queue.monoTake.rate) : 0.0;   // a dropped file starts at bar 1
+    const double ppqPerSec = bpm / 60.0;
+    for (const auto& n : notes)
+    {
+        if (n.isSibilant || n.endHop <= n.startHop) continue;
+        // a hop's pitch is measured over a window 4 hops long: its centre is 2 hops after the hop's start
+        out.push_back({ (startSec + (n.startHop + 2) * hopSec) * ppqPerSec, (startSec + (n.endHop + 2) * hopSec) * ppqPerSec,
+                        heardCentreMidi(n) });
+    }
+    return out;
+}
+
 void PitchTraceComponent::togglePreviewPlaying()
 {
     if (! hasPreviewClip()) return;

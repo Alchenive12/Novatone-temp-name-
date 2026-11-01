@@ -64,6 +64,7 @@ NovaToneAudioProcessor::NovaToneAudioProcessor()
     harmLeadParam     = apvts.getRawParameterValue("harm_lead");
     harmHumanizeParam = apvts.getRawParameterValue("harm_humanize");
     harmSourceParam   = apvts.getRawParameterValue("harm_source");
+    harmMidiOffsetParam = apvts.getRawParameterValue("harm_midiOffset");
 
     inputGainParam    = apvts.getRawParameterValue("global_input");
     outputGainParam   = apvts.getRawParameterValue("global_output");
@@ -809,6 +810,54 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
         polyClip.playback(buffer, hostSample, hostPlaying, getLatencySamples());
 
     // Choir playing (and not recording new parts): the AI choir replaces the live harmonies
+    // ---- Harmony "MIDI file" source: chord at the song position (host, or a playing Mono take) ----
+    {
+        double posPpq = 0.0, blockPpq = 0.0, bpmNow = 120.0;
+        bool moving = false;
+        if (auto* ph = getPlayHead())
+            if (const auto pos = ph->getPosition())
+            {
+                if (pos->getPpqPosition().hasValue()) posPpq = *pos->getPpqPosition();
+                if (pos->getBpm().hasValue()) bpmNow = *pos->getBpm();
+                moving = hostPlaying;
+            }
+        const double sr = juce::jmax(1.0, getSampleRate());
+        auto& mp = pitchQueue.monoPreview;
+        const juce::int64 takeStart = mp.timelineStart.load(std::memory_order_relaxed);
+        if (! hostPlaying && mp.playing.load(std::memory_order_relaxed) && takeStart >= 0 && mp.clipRate > 0.0)
+        {
+            // NovaTone's own transport playing a take: its song position = where it was recorded + play position
+            const double songSamples = (double) takeStart + mp.pos.load(std::memory_order_relaxed) * (sr / mp.clipRate);
+            posPpq = songSamples / sr * bpmNow / 60.0;
+            moving = true;
+        }
+        blockPpq = buffer.getNumSamples() / sr * bpmNow / 60.0;
+        harmonyPpq.store(posPpq, std::memory_order_relaxed);
+        harmonyPpqMoving.store(moving, std::memory_order_relaxed);
+
+        const bool fileSource = juce::roundToInt(loadP(harmSourceParam, 0.0f)) == 3;
+        bool valid = false; uint16_t mask = 0; int root = -1, quality = 0;
+        if (fileSource)
+        {
+            const juce::SpinLock::ScopedTryLockType tl(harmonyMidiLock);
+            if (tl.isLocked() && harmonyMidi != nullptr)
+                if (const auto* seg = harmonyMidi->at(posPpq - (double) loadP(harmMidiOffsetParam, 0.0f)))
+                { valid = true; mask = seg->mask; root = seg->root; quality = seg->quality; }
+        }
+        harmony.setExternalChord(fileSource, valid, mask, root, quality);
+
+        // Lead pitch by song position (for Auto-align): one sample per block while the song moves
+        if (leadHistoryClear.exchange(false)) { leadHistoryWrite = 0; leadHistoryCount.store(0); }
+        if (moving && ! tuneBypassed && tuneEngine.isVoiced() && tuneEngine.getUncorrectedPitchHz() > 0.0f)
+        {
+            leadHistoryPpq[(size_t) leadHistoryWrite]  = (float) posPpq;
+            leadHistoryLen[(size_t) leadHistoryWrite]  = (float) blockPpq;
+            leadHistoryMidi[(size_t) leadHistoryWrite] = 69.0f + 12.0f * std::log2(tuneEngine.getUncorrectedPitchHz() / 440.0f);
+            leadHistoryWrite = (leadHistoryWrite + 1) & (leadHistoryCap - 1);
+            leadHistoryCount.store(juce::jmin(leadHistoryCap, leadHistoryCount.load(std::memory_order_relaxed) + 1), std::memory_order_release);
+        }
+    }
+
     const auto recState = choirRecorder.getState();
     const bool choirRecording = recState == HarmonyExporter::State::armed || recState == HarmonyExporter::State::recording;
     if (harmonyOn && ! (choir.enabled.load(std::memory_order_relaxed) && ! choirRecording) && harmonyDry.getNumSamples() >= buffer.getNumSamples())
@@ -925,9 +974,54 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
     }
 }
 
+void NovaToneAudioProcessor::setHarmonyMidi(std::shared_ptr<const MidiChordTrack> t)
+{
+    std::shared_ptr<const MidiChordTrack> old;
+    {
+        const juce::SpinLock::ScopedLockType sl(harmonyMidiLock);
+        old = std::move(harmonyMidi);
+        harmonyMidi = std::move(t);
+    }
+    // `old` is released here, on the message thread
+}
+
+bool NovaToneAudioProcessor::loadHarmonyMidi(const juce::File& file, juce::String& error)
+{
+    auto t = MidiChordTrack::load(file, error);
+    if (t == nullptr) return false;
+    setHarmonyMidi(std::move(t));
+    return true;
+}
+
+void NovaToneAudioProcessor::clearHarmonyMidi() { setHarmonyMidi(nullptr); }
+
+std::shared_ptr<const MidiChordTrack> NovaToneAudioProcessor::getHarmonyMidi() const
+{
+    const juce::SpinLock::ScopedLockType sl(harmonyMidiLock);
+    return harmonyMidi;
+}
+
+std::vector<MidiChordTrack::LeadNote> NovaToneAudioProcessor::getLeadHistory() const
+{
+    std::vector<MidiChordTrack::LeadNote> out;
+    const int n = leadHistoryCount.load(std::memory_order_acquire);
+    out.reserve((size_t) n);
+    for (int i = 0; i < n; ++i)
+        out.push_back({ leadHistoryPpq[(size_t) i], leadHistoryPpq[(size_t) i] + leadHistoryLen[(size_t) i], leadHistoryMidi[(size_t) i] });
+    return out;
+}
+
 void NovaToneAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
+    state.removeChild(state.getChildWithName("HarmonyMidi"), nullptr);
+    if (const auto hm = getHarmonyMidi(); hm != nullptr && hm->fileData.getSize() > 0)
+    {
+        juce::ValueTree t("HarmonyMidi");
+        t.setProperty("name", hm->fileName, nullptr);
+        t.setProperty("data", hm->fileData.toBase64Encoding(), nullptr);
+        state.appendChild(t, nullptr);
+    }
     state.removeChild(state.getChildWithName("PolyClip"), nullptr);
     if (auto clipTree = polyClip.toValueTree(); clipTree.isValid() && clipTree.hasProperty("file"))
         state.appendChild(clipTree, nullptr);
@@ -945,6 +1039,19 @@ void NovaToneAudioProcessor::setStateInformation(const void* data, int sizeInByt
         auto tree = juce::ValueTree::fromXml(*xml);
         const auto clipTree = tree.getChildWithName("PolyClip").createCopy();
         tree.removeChild(tree.getChildWithName("PolyClip"), nullptr);
+        const auto midiTree = tree.getChildWithName("HarmonyMidi").createCopy();
+        tree.removeChild(tree.getChildWithName("HarmonyMidi"), nullptr);
+        {
+            std::shared_ptr<const MidiChordTrack> hm;
+            juce::MemoryBlock mb;
+            if (midiTree.isValid() && mb.fromBase64Encoding(midiTree.getProperty("data").toString()))
+            {
+                juce::String err;
+                hm = MidiChordTrack::fromData(mb, err);
+                if (hm != nullptr) const_cast<MidiChordTrack&>(*hm).fileName = midiTree.getProperty("name").toString();
+            }
+            setHarmonyMidi(std::move(hm));
+        }
         const auto choirFolder = tree.getProperty("choirFolder").toString();
         applyStateGuarded(tree);
         juce::MessageManager::callAsync([this, choirFolder, alive = juce::WeakReference<NovaToneAudioProcessor>(this)]
@@ -1062,7 +1169,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::crea
         layout.add(std::make_unique<APF>("harm_lead", "Lead Level", NR(-60.0f, 6.0f, 0.1f), 0.0f, dbAttr));
         layout.add(std::make_unique<APF>("harm_humanize", "Harmony Humanize", NR(0.0f, 1.0f, 0.01f), 0.4f));
         layout.add(std::make_unique<juce::AudioParameterChoice>("harm_source", "Harmony Chords From",
-            juce::StringArray { "Sidechain (beat)", "Key & scale", "MIDI notes" }, 0));
+            juce::StringArray { "Sidechain (beat)", "Key & scale", "MIDI notes", "MIDI file" }, 0));
+        // MIDI file source: shifts the file's chords against the song (beats; + = later) to line them up with the lead.
+        layout.add(std::make_unique<APF>("harm_midiOffset", "Chord File Offset", NR(-64.0f, 64.0f, 0.001f), 0.0f,
+            juce::AudioParameterFloatAttributes()
+                .withStringFromValueFunction([](float v, int) { return (v > 0.0f ? "+" : "") + juce::String(v, 2) + " beats"; })
+                .withValueFromStringFunction([](const juce::String& t) { return t.getFloatValue(); })));
     }
 
     return layout;

@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "GUI/PitchTraceQueue.h"
+#include "Harmony/MidiChordTrack.h"
 #include "DSP/TuneEngine.h"
 #include "DSP/TuneMacro.h"
 #include "DSP/AlterEngine.h"
@@ -95,7 +96,33 @@ public:
     HarmonyExporter& getChoirRecorder() noexcept { return choirRecorder; }
     ChoirSession& getChoir() noexcept { return choir; }
 
+    //==================================================================
+    // Harmony "MIDI file" source (message thread)
+    bool loadHarmonyMidi(const juce::File& file, juce::String& error);
+    void clearHarmonyMidi();
+    std::shared_ptr<const MidiChordTrack> getHarmonyMidi() const;
+    /** Song position (PPQ) the harmony chords are read at, before the offset (for the chord lane's playhead). */
+    double getHarmonyPositionPpq() const noexcept { return harmonyPpq.load(std::memory_order_relaxed); }
+    bool   isHarmonyPositionMoving() const noexcept { return harmonyPpqMoving.load(std::memory_order_relaxed); }
+    /** The lead's pitch by song position, recorded while the song (or a Mono take) plays: for Auto-align. */
+    std::vector<MidiChordTrack::LeadNote> getLeadHistory() const;
+    void clearLeadHistory() noexcept { leadHistoryClear.store(true); }
+
 private:
+    void setHarmonyMidi(std::shared_ptr<const MidiChordTrack>);
+    std::shared_ptr<const MidiChordTrack> harmonyMidi;   // message thread owns; audio reads under the lock
+    juce::SpinLock harmonyMidiLock;
+    std::atomic<double> harmonyPpq { 0.0 };
+    std::atomic<bool>   harmonyPpqMoving { false };
+    std::atomic<float>* harmMidiOffsetParam = nullptr;
+
+    static constexpr int leadHistoryCap = 1 << 16;      // block-rate samples: ~11 min at 512-sample blocks
+    std::array<float, leadHistoryCap> leadHistoryPpq {}, leadHistoryMidi {};
+    std::array<float, leadHistoryCap> leadHistoryLen {};
+    int leadHistoryWrite = 0;
+    std::atomic<int> leadHistoryCount { 0 };
+    std::atomic<bool> leadHistoryClear { false };
+
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void pushParametersToEngines() noexcept;
     uint16_t packScaleDegreeMask() const noexcept;

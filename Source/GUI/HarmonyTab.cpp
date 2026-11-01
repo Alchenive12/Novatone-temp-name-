@@ -220,8 +220,10 @@ HarmonyTab::HarmonyTab (juce::AudioProcessorValueTreeState& s, const HarmonyEngi
       mixKnob (s, "harm_mix", "Harmonies", {}, {}, "accent"),
       leadKnob (s, "harm_lead", "Lead", {}, {}, "cyan"),
       humanizeKnob (s, "harm_humanize", "Humanize", {}, {}, "mint"),
-      sourceSelector (s, "harm_source", "Chords", "Where the chords come from: the sidechain (your beat), the Tune tab's key & scale, or MIDI notes you play (each voice sings one held note)")
+      sourceSelector (s, "harm_source", "Chords", "Where the chords come from: the sidechain (your beat), the Tune tab's key & scale, MIDI notes you play (each voice sings one held note), or a MIDI file of the chords"),
+      chordLane (s)
 {
+    addChildComponent (chordLane);
     mixKnob.setTooltipText ("Level of all harmony voices");
     leadKnob.setTooltipText ("Level of the lead vocal. All the way down = harmonies only (to print them on their own track)");
     humanizeKnob.setTooltipText ("Humanize: each voice gets its own small timing offset and pitch drift, like separate singers");
@@ -385,6 +387,7 @@ void HarmonyTab::timerCallback()
     }
     repaint (chordCard.getUnion (keyboardCard));
     if (visibleVoiceCount() != shownVoices) { shownVoices = visibleVoiceCount(); layoutVoices(); } // preset / undo / session load
+    if (chordLane.isVisible() != fileSource()) { resized(); repaint(); }
     if (choir.pollArm (choirRecorder, [this] (int part) { return engine.getVoiceNote (part - 1); }))
         for (auto& v : voiceCards) v->repaint();
     if (++singerTick % 10 == 0) for (auto& v : voiceCards) v->refreshSinger();   // ~2x a second (checks voice files)
@@ -418,8 +421,11 @@ void HarmonyTab::paint (juce::Graphics& g)
     paintChoirBar (g);
     g.setFont (HarmonyEngineUI::font (11.0f, false));
     g.setColour (textSecondary);
-    g.drawFittedText ("Chords come from your beat on NovaTone's sidechain input (FL Studio: route the beat's mixer track to this track as a sidechain). "
-                      "Without it, harmonies use the Tune tab's key & scale.",
+    g.drawFittedText (fileSource()
+                        ? juce::String ("Chords come from the imported MIDI file at the song position (bar 1 of the file = bar 1 of the song, plus the offset). "
+                                        "Drag the lane or use Auto-align to line them up with your lead vocal.")
+                        : juce::String ("Chords come from your beat on NovaTone's sidechain input (FL Studio: route the beat's mixer track to this track as a sidechain). "
+                                        "Without it, harmonies use the Tune tab's key & scale."),
                       helpArea, juce::Justification::centredLeft, 2);
 }
 
@@ -443,6 +449,13 @@ void HarmonyTab::paintChordCard (juce::Graphics& g, juce::Rectangle<int> area)
         const int mode = juce::roundToInt (apvts.getRawParameterValue ("tune_mode")->load());
         big = juce::String (pcName (root)) + (mode == 1 ? " minor" : (mode == 2 ? " custom" : " major"));
         if (juce::roundToInt (apvts.getRawParameterValue ("harm_source")->load()) == 2) { big = "MIDI"; sub = "Voices sing your MIDI notes"; dot = mintAccent; }
+        else if (fileSource())
+        {
+            const auto t = chordLane.hooks.track ? chordLane.hooks.track() : nullptr;
+            if (t == nullptr)    { sub = "No MIDI file yet: import one below"; dot = accent; }
+            else if (chord >= 0) { big = chordName (chord); sub = "From " + t->fileName; dot = mintAccent; }
+            else                 { sub = "No chord here in the file: using the key"; dot = cyanAccent; }
+        }
         else if (! useSide)         sub = "Using the key & scale";
         else if (! sideConnected)   { sub = "No sidechain connected: using the key"; dot = accent; }
         else if (! sideActive)      { sub = "Sidechain silent: using the key"; dot = accent; }
@@ -548,8 +561,14 @@ void HarmonyTab::paintKeyboardCard (juce::Graphics& g, juce::Rectangle<int> area
     }
 }
 
+bool HarmonyTab::fileSource() const
+{
+    return juce::roundToInt (apvts.getRawParameterValue ("harm_source")->load()) == 3;
+}
+
 void HarmonyTab::resized()
 {
+    chordLane.setVisible (fileSource());
     auto r = getLocalBounds().reduced (12, 10);
     helpArea = r.removeFromBottom (30);
     r.removeFromBottom (4);
@@ -580,7 +599,13 @@ void HarmonyTab::resized()
         exportStatus = e;
     }
 
-    auto top = r.removeFromTop (juce::jmax (160, r.getHeight() - 300));
+    const int laneH = chordLane.isVisible() ? 118 : 0;
+    auto top = r.removeFromTop (juce::jmax (150, r.getHeight() - 300 - (laneH > 0 ? laneH + 10 : 0)));
+    if (laneH > 0)
+    {
+        r.removeFromTop (10);
+        chordLane.setBounds (r.removeFromTop (laneH));
+    }
     chordCard = top.removeFromLeft (juce::roundToInt ((float) top.getWidth() * 0.30f));
     top.removeFromLeft (10);
     mixCard = top.removeFromRight (juce::roundToInt ((float) top.getWidth() * 0.36f));

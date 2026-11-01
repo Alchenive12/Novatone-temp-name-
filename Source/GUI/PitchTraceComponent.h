@@ -9,6 +9,7 @@
 #include <functional>
 #include <vector>
 #include "PitchTraceQueue.h"
+#include "../Harmony/MidiChordTrack.h"
 #include "HarmonyEngineColours.h"
 
 namespace Poly { class ClipSession; }
@@ -65,6 +66,8 @@ public:
     /** Independent: preview ignores the DAW transport/position (plays only from Play / Stop). */
     void setIndependentPlay(bool independent);
     bool isPreviewPlaying() const;
+    /** Mono clip's notes on the song timeline (PPQ at `bpm`), for lining up a chord file; empty without a clip. */
+    std::vector<MidiChordTrack::LeadNote> leadNotesForAlignment(double bpm) const;
     float getViewStartHop() const noexcept { return viewStartHop; }   // tests
     int   getTimelineSize() const noexcept { return static_cast<int>(timeline.size()); }
     const std::vector<NewtoneNoteBlock>& getNotesForTests() const noexcept { return notes; }

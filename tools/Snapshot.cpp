@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "GUI/PitchTraceComponent.h"
+#include "GUI/ChordLane.h"
 #include "GUI/HarmonyTab.h"
 #include "GUI/TuneTab.h"
 #include "PluginEditor.h"
@@ -600,6 +601,108 @@ int main(int argc, char** argv)
             proc->processBlock(big, midi);
             if (pos > (int) (0.1 + 1.6 * 2 + 0.9) * 48000) break; // stop inside the F chord for the screenshot
         }
+    }
+
+    if (argc > 8 && juce::String(argv[8]) == "harmmidi")
+    {
+        // Chord file: C | Am | F | G (one bar each, 4/4, 480 tpq), twice
+        juce::MidiMessageSequence seq;
+        const int chordsMidi[4][3] = { { 48, 52, 55 }, { 45, 48, 52 }, { 41, 45, 48 }, { 43, 47, 50 } };
+        for (int bar = 0; bar < 8; ++bar)
+            for (int n : chordsMidi[bar % 4])
+            {
+                seq.addEvent(juce::MidiMessage::noteOn(1, n, (juce::uint8) 90), bar * 4 * 480.0);
+                seq.addEvent(juce::MidiMessage::noteOff(1, n), (bar + 1) * 4 * 480.0 - 1.0);
+            }
+        seq.updateMatchedPairs();
+        juce::MidiFile mf; mf.setTicksPerQuarterNote(480); mf.addTrack(seq);
+        const auto mid = outDir.getChildFile("chords.mid"); mid.deleteFile();
+        { juce::FileOutputStream os(mid); mf.writeTo(os); }
+        juce::String err;
+        std::cout << "load: " << np->loadHarmonyMidi(mid, err) << " " << err << " segments=" << np->getHarmonyMidi()->segments.size() << "\n";
+        for (auto& sg : np->getHarmonyMidi()->segments) std::cout << "  " << sg.start << "-" << sg.end << " " << MidiChordTrack::chordName(sg.root, sg.quality) << "\n";
+        for (auto [id, v] : { std::pair<const char*, float> { "harm_source", 3.0f }, { "harm_v1_on", 1.0f } })
+            if (auto* prm = np->apvts.getParameter(id)) prm->setValueNotifyingHost(prm->convertTo0to1(v));
+
+        std::unique_ptr<juce::AudioProcessorEditor> med(proc->createEditor());
+        med->setSize(w, h); med->setVisible(true);
+        std::function<void(juce::Component&)> show = [&](juce::Component& c)
+        {
+            for (auto* ch : c.getChildren())
+            {
+                if (dynamic_cast<HarmonyTab*>(ch) != nullptr) ch->setVisible(true);
+                else if (dynamic_cast<TuneTab*>(ch) != nullptr) ch->setVisible(false);
+                else show(*ch);
+            }
+        };
+        show(*med); pump(300);
+        const auto& eng = np->getHarmonyEngine();
+        // Lead melody that belongs to the chords 2 beats LATER than the file has them: chord tones of chord(beat - 2)
+        const int leadTones[4][2] = { { 64, 67 }, { 69, 72 }, { 65, 69 }, { 67, 71 } };
+        playHead.pos = 0; double lph = 0;
+        const double spb = 0.5;   // 120 BPM
+        for (int blk = 0; blk < (int) (32 * spb * 48000 / 512); ++blk)
+        {
+            for (int i = 0; i < 512; ++i)
+            {
+                const double t = (playHead.pos + i) / 48000.0;
+                const double beat = t / spb - 2.0;   // the song's chord for this lead note is 2 beats behind
+                const int c = beat < 0 ? 0 : ((int) (beat / 4.0)) % 4;
+                const int note = leadTones[c][((int) beat + 8) % 2];
+                const double f = 440.0 * std::pow(2.0, (note - 69) / 12.0);
+                const bool gap = std::fmod(t, spb) > spb * 0.9;
+                lph += 2 * 3.14159265 * f / 48000.0;
+                double hs = 0; for (int hN = 1; hN <= 8; ++hN) hs += std::sin(hN * lph) / hN;
+                const float smp = gap ? 0.0f : (float) (0.2 * hs);
+                buf.setSample(0, i, smp); buf.setSample(1, i, smp);
+            }
+            playHead.playing = true;
+            proc->processBlock(buf, midi);
+            playHead.pos += 512;
+            if (blk % 8 == 0) pump(5);
+            if (blk == (int) (5.2 * spb * 48000 / 512)) std::cout << "beat 5.2 (file: Am): chord shown " << eng.getChord() << " voice1 note " << eng.getVoiceNote(0) << "\n";
+        }
+        playHead.playing = false; buf.clear(); proc->processBlock(buf, midi); pump(400);
+        std::cout << "lead history samples: " << np->getLeadHistory().size() << "\n";
+        std::function<ChordLane*(juce::Component&)> findLane = [&](juce::Component& c) -> ChordLane*
+        { if (auto* l = dynamic_cast<ChordLane*>(&c)) return l; for (auto* ch : c.getChildren()) if (auto* l = findLane(*ch)) return l; return nullptr; };
+        auto* lane = findLane(*med);
+        std::cout << "lane visible: " << (lane != nullptr && lane->isVisible()) << "\n";
+        {
+            const auto rn = lane->hooks.leadNotes(); const auto tr = np->getHarmonyMidi();
+            std::cout << "lane lead notes: " << rn.size() << "\n";
+            for (size_t i = 0; i < juce::jmin<size_t>(6, rn.size()); ++i) std::cout << "  " << rn[i].start << "-" << rn[i].end << " " << rn[i].midi << "\n";
+            for (double off = 1.75; off <= 2.26; off += 0.125)
+            {
+                double tot = 0, hit = 0;
+                for (auto& n : rn) { const int pc = ((int) std::lround(n.midi) % 12 + 12) % 12; for (double p = n.start; p < n.end; p += 0.125) { const double wv = juce::jmin(0.125, n.end - p); if (auto* sg = tr->at(p + 0.5 * wv - off)) { tot += wv; if ((sg->mask >> pc) & 1u) hit += wv; } } }
+                std::cout << "  roll off " << off << " fit " << juce::String(hit / tot * 100.0, 1) << "%\n";
+            }
+        }
+        save(*med, outDir.getChildFile("harm_before_align.png"), 1.0f);
+        for (auto* ch : lane->getChildren())
+            if (auto* b = dynamic_cast<juce::TextButton*>(ch); b != nullptr && b->getButtonText() == "Auto-align") b->triggerClick();
+        pump(300);
+        {
+            const auto leadH = np->getLeadHistory(); const auto tr = np->getHarmonyMidi();
+            for (double off = 1.5; off <= 2.51; off += 0.125)
+            {
+                double tot = 0, hit = 0;
+                for (auto& n : leadH) { const int pc = ((int) std::lround(n.midi) % 12 + 12) % 12; if (auto* sg = tr->at(0.5 * (n.start + n.end) - off)) { tot += n.end - n.start; if ((sg->mask >> pc) & 1u) hit += n.end - n.start; } }
+                std::cout << "  off " << off << " fit " << juce::String(hit / tot * 100.0, 1) << "%\n";
+            }
+            // where does the lead history put the first note change? (true: beat 4 -> first Am-tone note at beat 6 in song terms)
+            float prev = -1; for (auto& n : leadH) { const int m = (int) std::lround(n.midi); if (m != (int) prev && n.start > 5.0 && n.start < 7.0) std::cout << "  lead change at ppq " << n.start << " to " << m << "\n"; prev = (float) m; }
+        }
+        std::cout << "offset after Auto-align: " << np->apvts.getRawParameterValue("harm_midiOffset")->load() << " beats\n";
+        save(*med, outDir.getChildFile("harm_after_align.png"), 1.0f);
+        // state round trip
+        juce::MemoryBlock st; proc->getStateInformation(st);
+        np->clearHarmonyMidi();
+        proc->setStateInformation(st.getData(), (int) st.getSize());
+        std::cout << "after state reload: file=" << (np->getHarmonyMidi() ? np->getHarmonyMidi()->fileName : juce::String("none"))
+                  << " offset=" << np->apvts.getRawParameterValue("harm_midiOffset")->load() << "\n";
+        med.reset(); proc->releaseResources(); return 0;
     }
 
     if (argc > 8 && juce::String(argv[8]) == "lookahead")
