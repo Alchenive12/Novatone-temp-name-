@@ -78,6 +78,8 @@ namespace Poly
         /** Moves the preview start (or the running preview) to a clip-relative sample. */
         void seekPreview (juce::int64 clipSample) { previewPos.store (std::max<juce::int64> (0, clipSample)); seekPending.store (true); }
         bool isPreviewPlaying() const noexcept { return previewPlaying.load(); }
+        /** true: the host transport never drives playback; only the preview (Play / Stop) does. */
+        void setIndependent (bool b) noexcept { independent.store (b); }
 
         void setNotes (const std::vector<ClipNote>& notes);   ///< from the piano roll; triggers a re-render
         std::vector<ClipNote> getNotes() const;
@@ -89,6 +91,8 @@ namespace Poly
         bool   hasClip() const noexcept { return clipLength.load() > 0; }
         double getClipSampleRate() const noexcept { return clipRate.load(); }
         juce::int64 getClipLength() const noexcept { return clipLength.load(); }
+        /** Song position (session-rate samples) of clip sample 0. */
+        juce::int64 getClipStart() const noexcept { return clipStart.load(); }
 
         /** True once the audible render reflects the latest notes. */
         bool isRenderCurrent() const
@@ -121,6 +125,8 @@ namespace Poly
         void requestWork();
         bool assembleRecording();
         void publish (std::unique_ptr<RenderBuffer> rb);
+        void notifyChanged();
+        std::mutex publishLock;
         static juce::File clipFolder();
 
         // ---- capture (chunk pool) ----
@@ -160,6 +166,7 @@ namespace Poly
         std::atomic<float> progress { 0.0f };
         std::atomic<juce::int64> playPosition { -1 };
         std::atomic<bool> previewPlaying { false };
+        std::atomic<bool> independent { false };
         std::atomic<juce::int64> previewPos { 0 };
         std::atomic<bool> seekPending { false };
         juce::WaitableEvent workEvent;

@@ -332,6 +332,7 @@ void NovaToneAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
     tuneEngine.setLookaheadEnabled(lookaheadRequested());
     tuneEngine.prepare(spec);
     polyClip.prepare(sampleRate, samplesPerBlock, (int)spec.numChannels);
+    pitchQueue.monoTake.prepare(sampleRate);
     harmony.prepare(sampleRate, samplesPerBlock);
     harmonyExporter.prepare(sampleRate, samplesPerBlock);
     choirRecorder.prepare(sampleRate, samplesPerBlock);
@@ -339,6 +340,8 @@ void NovaToneAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBloc
     harmonyDry.setSize((int)spec.numChannels, samplesPerBlock);
     alterEngine.prepare(spec);
     lastPublishedHopIndex = 0;
+    clearMidiState();
+    preparedBlockSize = samplesPerBlock;
 
     for (auto* g : { &inputGain, &outputGain })
     {
@@ -361,6 +364,15 @@ void NovaToneAudioProcessor::releaseResources()
     tuneEngine.reset();
     alterEngine.reset();
     lastPublishedHopIndex = 0;
+    clearMidiState();
+}
+
+void NovaToneAudioProcessor::clearMidiState()
+{
+    heldMidiNotes.fill(false);
+    midiHeld.fill(false);
+    activeOutputMidiNotes.fill(false);
+    lastActiveMidiNote = -1;
 }
 
 uint16_t NovaToneAudioProcessor::packScaleDegreeMask() const noexcept
@@ -505,8 +517,168 @@ void NovaToneAudioProcessor::publishPeaks(const juce::dsp::AudioBlock<float>& bl
     }
 }
 
+void NovaToneAudioProcessor::captureMonoTake(const juce::AudioBuffer<float>& buffer, std::optional<juce::int64> hostSample, bool hostPlaying) noexcept
+{
+    using T = PitchTraceQueue::MonoTake;
+    auto& t = pitchQueue.monoTake;
+    auto& mp = pitchQueue.monoPreview;
+    const bool polyMode = tunePolyphonicParam != nullptr && tunePolyphonicParam->load(std::memory_order_relaxed) > 0.5f;
+    if (polyMode || t.audio.getNumSamples() == 0)
+        return;
+
+    const int n = buffer.getNumSamples();
+    const bool songPos = hostPlaying && hostSample.has_value();
+
+    auto begin = [&] (bool anchored)
+    {
+        t.length.store(0, std::memory_order_relaxed);
+        t.peak = 0.0f;
+        t.songStart.store(anchored ? *hostSample : -1, std::memory_order_relaxed);
+        t.nextHostSample = anchored ? *hostSample : -1;
+        t.stopRequested.store(false, std::memory_order_relaxed);
+    };
+    auto finish = [&]
+    {
+        // A take that is too short or silent isn't worth replacing the roll with.
+        const bool keep = t.length.load(std::memory_order_relaxed) > static_cast<int>(t.rate * 0.3) && t.peak > 0.002f;
+        t.state.store(keep ? T::done : T::idle, std::memory_order_release);
+    };
+
+    int st = t.state.load(std::memory_order_acquire);
+    if (st == T::done)
+        return;
+    if (st == T::idle)
+    {
+        // Automatic take: the DAW plays, Mono is on, nothing is loaded yet, and we're not previewing.
+        if (! songPos || mp.loaded.load(std::memory_order_relaxed) || mp.playing.load(std::memory_order_relaxed))
+            return;
+        if (! t.state.compare_exchange_strong(st, T::capturing, std::memory_order_acq_rel))
+            return;
+        begin(true);
+    }
+    else if (st == T::armed)
+    {
+        // Rec pressed: start with the DAW, or (no DAW playing, e.g. Standalone) on the first sound.
+        const float pk = buffer.getMagnitude(0, n);
+        if (! songPos && pk < 0.003f)
+            return;
+        if (! t.state.compare_exchange_strong(st, T::capturing, std::memory_order_acq_rel))
+            return;
+        begin(songPos);
+    }
+
+    if (t.stopRequested.exchange(false, std::memory_order_relaxed)) { finish(); return; }
+
+    const bool anchored = t.songStart.load(std::memory_order_relaxed) >= 0;
+    if (anchored)
+    {
+        // DAW stopped, or jumped (loop / click on the timeline): the take ends here.
+        if (! songPos) { finish(); return; }
+        if (std::llabs(*hostSample - t.nextHostSample) > 1) { finish(); return; }
+        t.nextHostSample = *hostSample + n;
+    }
+
+    const int len = t.length.load(std::memory_order_relaxed);
+    const int room = t.audio.getNumSamples() - len;
+    const int count = juce::jmin(n, room);
+    const int chans = buffer.getNumChannels();
+    for (int ch = 0; ch < 2 && count > 0; ++ch)
+        t.audio.copyFrom(ch, len, buffer, juce::jmin(ch, chans - 1), 0, count);
+    if (count > 0)
+        t.peak = juce::jmax(t.peak, buffer.getMagnitude(0, count));
+    t.length.store(len + count, std::memory_order_release);
+    if (count < n)
+        finish(); // full (45 s)
+}
+
+void NovaToneAudioProcessor::renderMonoPreview(juce::AudioBuffer<float>& buffer, std::optional<juce::int64> hostSample, bool hostPlaying)
+{
+    auto& mp = pitchQueue.monoPreview;
+    const bool polyMode = tunePolyphonicParam != nullptr && tunePolyphonicParam->load(std::memory_order_relaxed) > 0.5f;
+    if (polyMode || ! mp.loaded.load(std::memory_order_relaxed))
+        return;
+
+    const bool independent = pitchQueue.independentPlay.load(std::memory_order_relaxed);
+    const int takeState = pitchQueue.monoTake.state.load(std::memory_order_relaxed);
+    const bool recordingTake = takeState == PitchTraceQueue::MonoTake::armed || takeState == PitchTraceQueue::MonoTake::capturing;
+    const juce::int64 songStart = mp.timelineStart.load(std::memory_order_relaxed);
+
+    bool inPlace = false;
+    if (hostPlaying && ! independent)
+    {
+        // DAW transport wins over the preview. A recorded take plays in place at its song position
+        // (edits audible in the song, like Poly); a dropped file isn't tied to the song, so live input passes.
+        mp.playing.store(false, std::memory_order_relaxed);
+        if (recordingTake || songStart < 0 || ! hostSample.has_value())
+            return;
+        inPlace = true;
+    }
+    else if (! mp.playing.load(std::memory_order_relaxed))
+        return;
+
+    const juce::SpinLock::ScopedTryLockType tl(mp.lock);
+    if (! tl.isLocked() || mp.clip == nullptr || getSampleRate() <= 0.0)
+        return;
+
+    const auto& clip = *mp.clip;
+    const int len = clip.getNumSamples();
+    const int n = buffer.getNumSamples();
+    const double step = mp.clipRate / getSampleRate();
+    double pos = inPlace ? static_cast<double>(*hostSample - songStart) * step : mp.pos.load(std::memory_order_relaxed);
+    const double blockStartPos = pos;
+    for (int i = 0; i < n; ++i, pos += step)
+    {
+        if (pos < 0.0 || pos >= len)
+        {
+            if (inPlace) continue; // outside the take: keep the live input
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch) buffer.setSample(ch, i, 0.0f);
+            continue;
+        }
+        // shortcut: linear interpolation for preview resampling; fine for monitoring, not for bouncing.
+        const int i0 = static_cast<int>(pos);
+        const float frac = static_cast<float>(pos - i0);
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        {
+            const int sc = juce::jmin(ch, clip.getNumChannels() - 1);
+            const float a = clip.getSample(sc, i0);
+            const float b = i0 + 1 < len ? clip.getSample(sc, i0 + 1) : 0.0f;
+            buffer.setSample(ch, i, a + frac * (b - a));
+        }
+    }
+
+    const int hopSamples = juce::jmax(1, mp.hopSamples);
+    if (inPlace)
+    {
+        const bool inside = blockStartPos >= 0.0 && blockStartPos < len;
+        pitchQueue.currentPlayheadHop.store(inside ? static_cast<int>(blockStartPos / hopSamples) : -1, std::memory_order_relaxed);
+        if (inside) mp.pos.store(blockStartPos, std::memory_order_relaxed); // Space after the DAW stops continues from here
+        return;
+    }
+    mp.pos.store(pos, std::memory_order_relaxed);
+    pitchQueue.currentPlayheadHop.store(static_cast<int>(pos / hopSamples), std::memory_order_relaxed);
+    if (pos >= len)
+        mp.playing.store(false, std::memory_order_relaxed);
+}
+
 void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, juce::MidiBuffer& midiMessages)
 {
+    // Engines size their scratch buffers to prepareToPlay's block size; some hosts send more.
+    if (preparedBlockSize > 0 && fullBuffer.getNumSamples() > preparedBlockSize)
+    {
+        // shortcut: incoming MIDI goes to the first chunk and later chunks' MIDI output lands at their own start
+        // offset 0; fine for note-level MIDI, revisit if sample-accurate MIDI matters.
+        juce::MidiBuffer rest;
+        for (int start = 0; start < fullBuffer.getNumSamples(); start += preparedBlockSize)
+        {
+            const int len = juce::jmin(preparedBlockSize, fullBuffer.getNumSamples() - start);
+            juce::AudioBuffer<float> chunk(fullBuffer.getArrayOfWritePointers(), fullBuffer.getNumChannels(), start, len);
+            juce::MidiBuffer& m = start == 0 ? midiMessages : rest;
+            if (start > 0) rest.clear();
+            processBlock(chunk, m);
+            if (start > 0) midiMessages.addEvents(rest, 0, len, start);
+        }
+        return;
+    }
     juce::ScopedNoDenormals noDenormals;
 
     // Main bus only from here on; the sidechain (if the host connected one) feeds the Harmony tab.
@@ -556,15 +728,7 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
     for (auto ch = getMainBusNumInputChannels(); ch < mainChannels; ++ch)
         buffer.clear(ch, 0, buffer.getNumSamples());
 
-    pushParametersToEngines();
-
-    juce::dsp::AudioBlock<float> block(buffer);
-    juce::dsp::ProcessContextReplacing<float> context(block);
-
-    inputGain.process(context);
-    publishPeaks(block, inputPeak);
-
-    // Host transport (sample position + playing state) for the poly clip
+    // Host transport (sample position + playing state) for the clips
     std::optional<juce::int64> hostSample;
     bool hostPlaying = false;
     if (auto* ph = getPlayHead())
@@ -573,6 +737,17 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
             hostPlaying = pos->getIsPlaying();
             if (pos->getTimeInSamples().hasValue()) hostSample = *pos->getTimeInSamples();
         }
+
+    captureMonoTake(buffer, hostSample, hostPlaying);   // raw input, before the preview replaces it
+    renderMonoPreview(buffer, hostSample, hostPlaying);
+    pushParametersToEngines();
+
+    juce::dsp::AudioBlock<float> block(buffer);
+    juce::dsp::ProcessContextReplacing<float> context(block);
+
+    inputGain.process(context);
+    publishPeaks(block, inputPeak);
+
     const bool polyMode = tunePolyphonicParam != nullptr && tunePolyphonicParam->load(std::memory_order_relaxed) > 0.5f;
     if (polyMode)
         polyClip.capture(buffer, hostSample, hostPlaying);
@@ -672,6 +847,16 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
             if (pos->getBpm().hasValue())         bpm = *pos->getBpm();
         }
     }
+    pitchQueue.hostBpm.store(bpm, std::memory_order_relaxed);
+
+    // MIDI clean turned off / Tune bypassed / Poly: the block below stops running, so release its notes now.
+    if (! tuneEngine.isMidiCleanModeEnabled() || tuneBypassed)
+        for (int m = 0; m < 128; ++m)
+            if (activeOutputMidiNotes[(size_t)m])
+            {
+                midiMessages.addEvent(juce::MidiMessage::noteOff(1, m), 0);
+                activeOutputMidiNotes[(size_t)m] = false;
+            }
 
     const int currentHopIdx = tuneEngine.getCurrentHopIndex();
     if (currentHopIdx == lastPublishedHopIndex)
@@ -763,7 +948,9 @@ void NovaToneAudioProcessor::setStateInformation(const void* data, int sizeInByt
         applyStateGuarded(tree);
         juce::MessageManager::callAsync([this, choirFolder, alive = juce::WeakReference<NovaToneAudioProcessor>(this)]
         {
-            if (alive != nullptr && choirFolder.isNotEmpty()) choir.open(juce::File(choirFolder));
+            if (alive == nullptr) return;
+            if (choirFolder.isNotEmpty()) choir.open(juce::File(choirFolder));
+            else choir.close();
         });
         if (clipTree.isValid())
             polyClip.fromValueTree(clipTree);

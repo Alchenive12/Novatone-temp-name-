@@ -260,9 +260,29 @@ int PitchTraceComponent::snapMidiToScale(float midiNote, uint16_t scaleMask) con
 //==============================================================================
 // Undo / Redo & Selected-Note Inspector API
 //==============================================================================
+PitchTraceComponent::EditSnapshot PitchTraceComponent::captureSnapshot() const
+{
+    EditSnapshot s { notes, {} };
+    s.drawnMidi.reserve(timeline.size());
+    for (const auto& th : timeline)
+        s.drawnMidi.push_back(th.hasCustomPitch ? th.customMidi : std::numeric_limits<float>::quiet_NaN());
+    return s;
+}
+
+void PitchTraceComponent::restoreSnapshot(EditSnapshot&& s)
+{
+    notes = std::move(s.notes);
+    for (size_t h = 0; h < timeline.size(); ++h)
+    {
+        const float m = h < s.drawnMidi.size() ? s.drawnMidi[h] : std::numeric_limits<float>::quiet_NaN();
+        timeline[h].hasCustomPitch = ! std::isnan(m);
+        timeline[h].customMidi = std::isnan(m) ? 0.0f : m;
+    }
+}
+
 void PitchTraceComponent::pushUndoSnapshot()
 {
-    undoStack.push_back(notes);
+    undoStack.push_back(captureSnapshot());
     if (undoStack.size() > maxUndoSteps)
         undoStack.erase(undoStack.begin());
     redoStack.clear();
@@ -293,8 +313,8 @@ void PitchTraceComponent::undo()
     if (undoStack.empty())
         return;
 
-    redoStack.push_back(notes);
-    notes = std::move(undoStack.back());
+    redoStack.push_back(captureSnapshot());
+    restoreSnapshot(std::move(undoStack.back()));
     undoStack.pop_back();
     relinkTimelineToNotes();
     syncActiveOverrideToEngine();
@@ -307,8 +327,8 @@ void PitchTraceComponent::redo()
     if (redoStack.empty())
         return;
 
-    undoStack.push_back(notes);
-    notes = std::move(redoStack.back());
+    undoStack.push_back(captureSnapshot());
+    restoreSnapshot(std::move(redoStack.back()));
     redoStack.pop_back();
     relinkTimelineToNotes();
     syncActiveOverrideToEngine();
@@ -587,6 +607,139 @@ void PitchTraceComponent::selectAdjacentNote(int direction)
     }
 }
 
+bool PitchTraceComponent::hasPreviewClip() const
+{
+    if (isClipMode())
+        return clipSession->getStatus() == Poly::ClipSession::Status::ready;
+    return ! polyphonicModeEnabled && queue.monoPreview.hasClip();
+}
+
+void PitchTraceComponent::setPreviewPlaying(bool shouldPlay)
+{
+    if (isClipMode())
+    {
+        clipSession->setPreviewPlaying(shouldPlay);
+        return;
+    }
+    auto& mp = queue.monoPreview;
+    if (shouldPlay && ! mp.hasClip()) return;
+    if (shouldPlay && mp.pos.load() >= static_cast<double>(loadedAudioClip.getNumSamples()))
+        mp.pos.store(0.0);
+    mp.playing.store(shouldPlay);
+}
+
+bool PitchTraceComponent::isPreviewPlaying() const
+{
+    if (isClipMode())
+        return clipSession->isPreviewPlaying();
+    return queue.monoPreview.playing.load();
+}
+
+void PitchTraceComponent::togglePreviewPlaying()
+{
+    if (! hasPreviewClip()) return;
+    setPreviewPlaying(! isPreviewPlaying());
+}
+
+void PitchTraceComponent::toggleMonoRecord()
+{
+    using T = PitchTraceQueue::MonoTake;
+    auto& t = queue.monoTake;
+    int st = t.state.load();
+    if (st == T::capturing)
+        t.stopRequested.store(true);                    // the audio thread ends the take
+    else if (st == T::armed)
+        t.state.compare_exchange_strong(st, T::idle);   // cancel
+    else if (st == T::idle)
+    {
+        queue.monoPreview.playing.store(false);
+        t.state.compare_exchange_strong(st, T::armed);
+    }
+    timerCallback();
+}
+
+void PitchTraceComponent::adoptMonoTake()
+{
+    auto& t = queue.monoTake;
+    const int len = t.length.load(std::memory_order_acquire);
+    const juce::int64 songStart = t.songStart.load();
+    if (len <= 0 || t.audio.getNumSamples() < len)
+    {
+        t.state.store(PitchTraceQueue::MonoTake::idle);
+        return;
+    }
+    juce::AudioBuffer<float> take(2, len);
+    for (int ch = 0; ch < 2; ++ch)
+        take.copyFrom(ch, 0, t.audio, ch, 0, len);
+    const double rate = t.rate;
+    t.state.store(PitchTraceQueue::MonoTake::idle, std::memory_order_release);
+
+    loadingSample = true;
+    repaint();
+    if (auto* peer = getPeer()) peer->performAnyPendingRepaintsNow();
+    const juce::ScopeGuard hideLoading { [this] { loadingSample = false; repaint(); } };
+
+    queue.clearHopOverrides();      // live edits were keyed to the live roll, not to the take
+    analyzeAudioBufferIntoNotes(take, rate);
+    queue.monoPreview.timelineStart.store(songStart);
+    queue.currentPlayheadHop.store(0, std::memory_order_relaxed);
+    currentCoachHint = "Take ready: edit notes, then Play or press Space. Rec records a new take; File > Clear goes back to live.";
+}
+
+void PitchTraceComponent::seekClipToStart()
+{
+    if (isClipMode())
+    {
+        clipSession->seekPreview(0);
+        clipPlayHop = 0;
+    }
+    else
+    {
+        queue.monoPreview.pos.store(0.0);
+        queue.currentPlayheadHop.store(0, std::memory_order_relaxed);
+    }
+    viewStartHop = 0.0f;
+    repaint();
+}
+
+void PitchTraceComponent::setIndependentPlay(bool independent)
+{
+    queue.independentPlay.store(independent);
+    if (clipSession != nullptr)
+        clipSession->setIndependent(independent);
+}
+
+double PitchTraceComponent::hopToHostPpq(int hop) const noexcept
+{
+    if (isClipMode())
+    {
+        // shortcut: one tempo from song start (host's current BPM); use the host's PPQ per hop if tempo changes matter.
+        const double rate = clipSession->getClipSampleRate();
+        if (rate <= 0.0) return 0.0;
+        const double sec = static_cast<double>(clipSession->getClipStart() + static_cast<juce::int64>(hop) * clipHopSize) / rate;
+        return sec * queue.hostBpm.load(std::memory_order_relaxed) / 60.0;
+    }
+    return timeline[(size_t)hop].data.ppqPosition; // captured from the host while it played
+}
+
+int PitchTraceComponent::snapHopToHostGrid(int hop) const noexcept
+{
+    const int size = static_cast<int>(timeline.size());
+    if (! snapToGridEnabled || size < 2) return hop;
+    hop = juce::jlimit(0, size - 1, hop);
+    constexpr double step = 0.25; // 1/16 note in quarter-note PPQ
+    const double target = std::round(hopToHostPpq(hop) / step) * step;
+    // Nearest hop to the grid line; no host PPQ (all equal) leaves the hop unchanged.
+    int best = hop;
+    double bestErr = std::abs(hopToHostPpq(hop) - target);
+    for (int k = juce::jmax(0, hop - 128); k <= juce::jmin(size - 1, hop + 128); ++k)
+    {
+        const double err = std::abs(hopToHostPpq(k) - target);
+        if (err < bestErr) { bestErr = err; best = k; }
+    }
+    return best;
+}
+
 void PitchTraceComponent::setSnapToScale(bool shouldSnap) noexcept
 {
     snapToScaleEnabled = shouldSnap;
@@ -718,6 +871,8 @@ void PitchTraceComponent::clearTimeline()
     notes.clear();
     referenceGhostNotes.clear();
     loadedAudioClip.setSize(0, 0);
+    queue.monoPreview.clear();
+    queue.monoTake.state.store(PitchTraceQueue::MonoTake::idle); // back to live; the next DAW play records a new take
     selectedNoteId = -1;
     hoveredNoteId = -1;
     advancedEditNoteId = -1;
@@ -1549,8 +1704,8 @@ void PitchTraceComponent::appendHopToTimeline(const PitchTraceQueue::PitchData& 
         timeline.erase(timeline.begin(), timeline.begin() + dropCount);
         for (auto& n : notes)
         {
-            n.startHop -= dropCount;
-            n.endHop   -= dropCount;
+            n.startHop = juce::jmax(0, n.startHop - dropCount); // a note straddling the cut must not go negative
+            n.endHop  -= dropCount;
         }
         notes.erase(std::remove_if(notes.begin(), notes.end(),
             [](const NewtoneNoteBlock& n) { return n.endHop <= 0; }), notes.end());
@@ -1825,6 +1980,58 @@ void PitchTraceComponent::timerCallback()
         }
         if (needsRepaint) repaint();
         return;
+    }
+
+    if (! polyphonicModeEnabled)
+    {
+        using T = PitchTraceQueue::MonoTake;
+        const int ts = queue.monoTake.state.load(std::memory_order_acquire);
+        if (ts == T::done)
+        {
+            popScratch.clear();
+            adoptMonoTake();
+            lastMonoTakeState = T::idle;
+            if (onClipStatusChanged) onClipStatusChanged();
+            return;
+        }
+        if (ts != lastMonoTakeState)
+        {
+            if (ts == T::armed)          currentCoachHint = "Rec armed: press play in your DAW (or start singing) to record a take.";
+            else if (ts == T::capturing) currentCoachHint = "Recording take... stop your DAW (or press Stop) to edit it here.";
+            lastMonoTakeState = ts;
+            needsRepaint = true;
+            if (onClipStatusChanged) onClipStatusChanged();
+        }
+        if (ts == T::armed || ts == T::capturing)
+        {
+            // A new take replaces the loaded clip: show it coming in live.
+            if (loadedAudioClip.getNumSamples() > 0 && ts == T::capturing)
+            {
+                loadedAudioClip.setSize(0, 0);
+                queue.monoPreview.clear();
+                queue.clearHopOverrides();
+                timeline.clear();
+                notes.clear();
+                selectedNoteId = -1;
+                viewStartHop = 0.0f;
+                needsRepaint = true;
+            }
+        }
+    }
+
+    if (loadedAudioClip.getNumSamples() > 0)
+    {
+        // A loaded file owns the timeline: live hops (incl. the preview's own) would append to it and
+        // push the file off the start. Clear the roll to go back to live capture.
+        popScratch.clear();
+        const int hop = queue.currentPlayheadHop.load(std::memory_order_relaxed);
+        if (hop != lastFilePlayHop)
+        {
+            lastFilePlayHop = hop;
+            if (autoScrollEnabled && (static_cast<float>(hop) > viewStartHop + visibleHopsCount * 0.88f || static_cast<float>(hop) < viewStartHop))
+                viewStartHop = juce::jmax(0.0f, static_cast<float>(hop) - visibleHopsCount * 0.12f);
+            needsRepaint = true;
+        }
     }
 
     if (!popScratch.empty())
@@ -2365,6 +2572,23 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
     const int firstSub = juce::jmax(0, static_cast<int>(std::floor(viewStartHop / hopsPerQuarterBeat)));
     const int lastSub  = static_cast<int>(std::ceil((viewStartHop + visibleHopsCount) / hopsPerQuarterBeat));
 
+    if (snapToGridEnabled && timeline.size() > 1)
+    {
+        // Show the DAW's 1/16 grid the edits snap to. shortcut: bars assume 4/4.
+        const int h0 = juce::jmax(1, static_cast<int>(viewStartHop));
+        const int h1 = juce::jmin(static_cast<int>(timeline.size()) - 1, static_cast<int>(viewStartHop + visibleHopsCount) + 1);
+        for (int h = h0; h <= h1; ++h)
+        {
+            const auto sub = static_cast<juce::int64>(std::floor(hopToHostPpq(h) / 0.25));
+            if (sub == static_cast<juce::int64>(std::floor(hopToHostPpq(h - 1) / 0.25)))
+                continue;
+            const bool isBar  = (sub % 16) == 0;
+            const bool isBeat = (sub % 4) == 0;
+            g.setColour(textPrimary.withAlpha(isBar ? 0.12f : (isBeat ? 0.055f : 0.022f)));
+            g.drawVerticalLine(juce::roundToInt(hopToX(static_cast<float>(h), grid)), grid.getY(), grid.getBottom());
+        }
+    }
+    else
     for (int sub = firstSub; sub <= lastSub; ++sub)
     {
         const float x = hopToX(static_cast<float>(sub) * hopsPerQuarterBeat, grid);
@@ -2665,6 +2889,33 @@ void PitchTraceComponent::paint(juce::Graphics& g)
         g.setColour(hairline());
         g.drawHorizontalLine(juce::roundToInt(corner.getBottom() - 1.0f), corner.getX(), corner.getRight());
         g.drawVerticalLine(juce::roundToInt(corner.getRight() - 1.0f), corner.getY(), corner.getBottom());
+
+        // Loading screen while a new sample is read / analysed
+        const bool polyLoading = isClipMode() && clipSession->getStatus() == Poly::ClipSession::Status::analysing;
+        if (loadingSample || polyLoading)
+        {
+            g.setColour(graphBackground.withAlpha(0.82f));
+            g.fillRect(outer);
+            const auto box = juce::Rectangle<float>(260.0f, 76.0f).withCentre(outer.getCentre());
+            g.setColour(panel);
+            g.fillRoundedRectangle(box, 8.0f);
+            g.setColour(hairline());
+            g.drawRoundedRectangle(box, 8.0f, 1.0f);
+            g.setColour(textPrimary);
+            g.setFont(HarmonyEngineUI::font(14.0f, true));
+            g.drawText("Loading sample...", polyLoading ? box.withTrimmedBottom(34.0f) : box,
+                       polyLoading ? juce::Justification::centredBottom : juce::Justification::centred);
+            // Poly analyses in the background and reports progress; Mono loads in one blocking step (no bar).
+            if (polyLoading)
+            {
+            const float p = juce::jlimit(0.0f, 1.0f, clipSession->getProgress());
+            const auto bar = juce::Rectangle<float>(box.getWidth() - 40.0f, 6.0f).withCentre({ box.getCentreX(), box.getBottom() - 22.0f });
+            g.setColour(textPrimary.withAlpha(0.12f));
+            g.fillRoundedRectangle(bar, 3.0f);
+            g.setColour(accent);
+            g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * p), 3.0f);
+            }
+        }
     }
 
     g.setColour(hairline());
@@ -2678,6 +2929,13 @@ bool PitchTraceComponent::keyPressed(const juce::KeyPress& key)
 {
     const auto mods = key.getModifiers();
     const int code  = key.getKeyCode();
+
+    // Space: stop / continue the clip on NovaTone's own transport (Mono and Poly)
+    if (code == juce::KeyPress::spaceKey && ! mods.isCommandDown() && ! mods.isCtrlDown() && ! mods.isAltDown())
+    {
+        togglePreviewPlaying();
+        return true;
+    }
 
     if (mods.isCommandDown() || mods.isCtrlDown())
     {
@@ -2950,6 +3208,8 @@ void PitchTraceComponent::mouseDown(const juce::MouseEvent& e)
         const int scrubH = juce::jlimit(0, juce::jmax(0, static_cast<int>(timeline.size()) - 1),
                                         static_cast<int>(std::lround(xToHop(pt.x, grid))));
         queue.currentPlayheadHop.store(scrubH, std::memory_order_relaxed);
+        if (! polyphonicModeEnabled)
+            queue.monoPreview.pos.store(static_cast<double>(scrubH) * queue.monoPreview.hopSamples);
         if (isClipMode())
         {
             clipPlayHop = scrubH;
@@ -3083,7 +3343,7 @@ void PitchTraceComponent::mouseDown(const juce::MouseEvent& e)
         if (e.mods.isCtrlDown() || e.mods.isAltDown())
             joinNoteWithNext(noteIdx);
         else
-            splitNoteAtHop(noteIdx, static_cast<int>(std::lround(xToHop(pt.x, grid))));
+            splitNoteAtHop(noteIdx, snapHopToHostGrid(static_cast<int>(std::lround(xToHop(pt.x, grid)))));
         return;
     }
 
@@ -3173,6 +3433,8 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
         const int scrubH = juce::jlimit(0, juce::jmax(0, static_cast<int>(timeline.size()) - 1),
                                         static_cast<int>(std::lround(xToHop(pt.x, grid))));
         queue.currentPlayheadHop.store(scrubH, std::memory_order_relaxed);
+        if (! polyphonicModeEnabled)
+            queue.monoPreview.pos.store(static_cast<double>(scrubH) * queue.monoPreview.hopSamples);
         if (isClipMode())
         {
             clipPlayHop = scrubH;
@@ -3240,7 +3502,7 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
         case DragAction::TrimNoteLeft:
         {
             const int oldStart = note->startHop;
-            const int newStart = juce::jlimit(0, note->endHop - 2, static_cast<int>(std::lround(xToHop(pt.x, grid))));
+            const int newStart = juce::jlimit(0, note->endHop - 2, snapHopToHostGrid(static_cast<int>(std::lround(xToHop(pt.x, grid)))));
             // Problem #3 Fix: Linked Boundary Time-Warping (Alt + Left-Edge Drag stretches/compresses previous note):
             if (e.mods.isAltDown())
             {
@@ -3263,7 +3525,7 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
         {
             const int maxH   = static_cast<int>(timeline.size());
             const int oldEnd = note->endHop;
-            const int newEnd = juce::jlimit(note->startHop + 2, maxH, static_cast<int>(std::lround(xToHop(pt.x, grid))));
+            const int newEnd = juce::jlimit(note->startHop + 2, maxH, snapHopToHostGrid(static_cast<int>(std::lround(xToHop(pt.x, grid)))));
             // Problem #3 Fix: Linked Boundary Time-Warping (Alt + Right-Edge Drag stretches/compresses next note):
             if (e.mods.isAltDown())
             {
@@ -3462,6 +3724,12 @@ void PitchTraceComponent::filesDropped(const juce::StringArray& files, int, int)
         return;
     }
 
+    // Mono loads synchronously: paint the loading screen now, before the message thread blocks.
+    loadingSample = true;
+    repaint();
+    if (auto* peer = getPeer()) peer->performAnyPendingRepaintsNow();
+    const juce::ScopeGuard hideLoading { [this] { loadingSample = false; repaint(); } };
+
     juce::AudioFormatManager formatManager;
     formatManager.registerBasicFormats();
 
@@ -3489,6 +3757,7 @@ void PitchTraceComponent::analyzeAudioBufferIntoNotes(const juce::AudioBuffer<fl
 
     const int windowSize = juce::nextPowerOfTwo(static_cast<int>(std::ceil(2.0 * sampleRate / 60.0)));
     const int hopSize    = windowSize / 4;
+    queue.monoPreview.setClip(buffer, sampleRate, hopSize);
 
     MPMDetector offlineDetector;
     offlineDetector.prepare(sampleRate, windowSize);
@@ -3801,6 +4070,7 @@ void PitchTraceComponent::analyzeAudioBufferIntoNotes(const juce::AudioBuffer<fl
     visibleHopsCount = static_cast<float>(std::clamp<size_t>(timeline.size() + 8, 80, 320));
     notifySelectionChanged();
     repaint();
+    if (onClipStatusChanged) onClipStatusChanged(); // enables the Mono Play / Stop buttons
 }
 
 void PitchTraceComponent::promptLoadAudioFile()
@@ -3963,7 +4233,7 @@ void PitchTraceComponent::promptExportWavFile()
             if (outFile == juce::File()) return;
 
             const double sr = (safeThis->loadedAudioSampleRate > 0.0) ? safeThis->loadedAudioSampleRate : 48000.0;
-            const int hopSize = 512;
+            const int hopSize = safeThis->queue.monoPreview.hopSamples; // same hop the file was analysed with
             const int numHops = static_cast<int>(safeThis->timeline.size());
             if (numHops <= 0) return;
 

@@ -602,6 +602,66 @@ int main(int argc, char** argv)
         }
     }
 
+    if (argc > 8 && juce::String(argv[8]) == "monotake")
+    {
+        // ---- Mono take: record while the "DAW" plays, stop, then play it on NovaTone's own transport ----
+        std::unique_ptr<juce::AudioProcessorEditor> med(proc->createEditor());
+        med->setSize(w, h); med->setVisible(true);
+        auto* roll = findRoll(*med);
+        auto& q = np->getPitchTraceQueue();
+        auto sing = [&](int blocks, bool hostPlays, float amp)
+        {
+            for (int b = 0; b < blocks; ++b)
+            {
+                for (int i = 0; i < 512; ++i)
+                {
+                    const double t = (playHead.pos + i) / 48000.0;
+                    const double f = 220.0 * std::pow(2.0, (2.0 * std::floor(t * 2.0)) / 12.0);
+                    const float sm = (float) (amp * (std::sin(ph) + 0.3 * std::sin(2 * ph)));
+                    ph += juce::MathConstants<double>::twoPi * f / 48000.0;
+                    buf.setSample(0, i, sm); buf.setSample(1, i, sm);
+                }
+                playHead.playing = hostPlays;
+                proc->processBlock(buf, midi);
+                if (hostPlays) playHead.pos += 512;
+                if (b % 4 == 0) pump(5);
+            }
+        };
+        std::cout << "before: hasClip=" << roll->hasPreviewClip() << " take=" << roll->getMonoTakeState() << "\n";
+        playHead.pos = 48000 * 4;                    // song position 4 s
+        sing(94 * 4, true, 0.25f);                   // ~4 s of singing while the DAW plays
+        std::cout << "while DAW plays: take=" << roll->getMonoTakeState() << " len=" << q.monoTake.length.load() << "\n";
+        sing(4, false, 0.0f);                        // DAW stops
+        pump(500);
+        std::cout << "after stop: hasClip=" << roll->hasPreviewClip() << " take=" << roll->getMonoTakeState()
+                  << " songStart=" << q.monoPreview.timelineStart.load() << "\n";
+        roll->keyPressed(juce::KeyPress(juce::KeyPress::spaceKey));
+        float outPeak = 0.0f;
+        for (int b = 0; b < 100; ++b) { buf.clear(); playHead.playing = false; proc->processBlock(buf, midi); outPeak = juce::jmax(outPeak, buf.getMagnitude(0, 512)); }
+        pump(200);
+        const int hopPlaying = q.currentPlayheadHop.load();
+        std::cout << "space -> playing=" << roll->isPreviewPlaying() << " outPeak(silent input)=" << outPeak << " playheadHop=" << hopPlaying << "\n";
+        save(*med, outDir.getChildFile("mono_take_playing.png"), 1.0f);
+        roll->keyPressed(juce::KeyPress(juce::KeyPress::spaceKey));
+        std::cout << "space -> playing=" << roll->isPreviewPlaying() << "\n";
+        for (int b = 0; b < 20; ++b) { buf.clear(); proc->processBlock(buf, midi); }
+        std::cout << "stopped: playheadHop=" << q.currentPlayheadHop.load() << " (held)\n";
+        roll->keyPressed(juce::KeyPress(juce::KeyPress::spaceKey));
+        for (int b = 0; b < 10; ++b) { buf.clear(); proc->processBlock(buf, midi); }
+        std::cout << "continue: playheadHop=" << q.currentPlayheadHop.load() << " (> held)\n";
+        roll->keyPressed(juce::KeyPress(juce::KeyPress::spaceKey));
+        // DAW plays inside the take: clip replaces the (silent) input in place
+        playHead.pos = 48000 * 5; outPeak = 0.0f;
+        for (int b = 0; b < 40; ++b) { buf.clear(); playHead.playing = true; proc->processBlock(buf, midi); playHead.pos += 512; outPeak = juce::jmax(outPeak, buf.getMagnitude(0, 512)); }
+        std::cout << "DAW in place: outPeak=" << outPeak << " playheadHop=" << q.currentPlayheadHop.load()
+                  << " take=" << roll->getMonoTakeState() << " (no new take)\n";
+        playHead.playing = false; buf.clear(); proc->processBlock(buf, midi); pump(100);
+        save(*med, outDir.getChildFile("mono_take_stopped.png"), 1.0f);
+        med.reset();
+        proc->releaseResources();
+        return 0;
+    }
+
     std::unique_ptr<juce::AudioProcessorEditor> ed(proc->createEditor());
     ed->setSize(w, h);
     ed->setVisible(true);

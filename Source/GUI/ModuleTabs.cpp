@@ -169,6 +169,12 @@ namespace HarmonyEngineUI
             p.addTriangle (c.x - s * 0.38f, c.y - s * 0.5f, c.x - s * 0.38f, c.y + s * 0.5f, c.x + s * 0.5f, c.y);
             g.fillPath (p);
         }
+        else if (icon == "toStart")
+        {
+            g.fillRect (juce::Rectangle<float> (s * 0.16f, s * 0.9f).withCentre ({ c.x - s * 0.4f, c.y }));
+            p.addTriangle (c.x + s * 0.45f, c.y - s * 0.45f, c.x + s * 0.45f, c.y + s * 0.45f, c.x - s * 0.3f, c.y);
+            g.fillPath (p);
+        }
         else if (icon == "stop")
         {
             g.fillRoundedRectangle (juce::Rectangle<float> (s * 0.9f, s * 0.9f).withCentre (c), 1.5f);

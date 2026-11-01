@@ -264,7 +264,7 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     //--------------------------------------------------------------------------
     // Toolbar: tools (segmented), mono/poly (segmented), status chips
     for (auto* tb : { &editToolButton, &cutToolButton, &advancedToolButton, &drawToolButton,
-                      &monoModeButton, &polyModeButton, &midiCleanButton, &snapScaleButton, &autoScrollButton })
+                      &monoModeButton, &polyModeButton, &midiCleanButton, &snapScaleButton, &snapGridButton, &independentButton, &autoScrollButton })
     {
         tb->setLookAndFeel (&laf);
         addAndMakeVisible (tb);
@@ -283,6 +283,12 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     polyModeButton.getProperties().set ("pillRole", "mint");
 
     styleChip (snapScaleButton,  "cyan");
+    styleChip (snapGridButton,   "cyan");
+    snapGridButton.setTooltip ("Grid: snap slices and note edges to your DAW's 1/16 grid");
+    snapGridButton.onStateChange = [this] { pitchTrace.setSnapToHostGrid (snapGridButton.getToggleState()); };
+    styleChip (independentButton, "mint");
+    independentButton.setTooltip ("Independent: Play / Stop run the clip on NovaTone's own playhead, ignoring FL Studio's transport and song position");
+    independentButton.onStateChange = [this] { pitchTrace.setIndependentPlay (independentButton.getToggleState()); };
     styleChip (autoScrollButton, "cyan");
     styleChip (midiCleanButton,  "mint");
     midiCleanButton.setTooltip ("MIDI clean (Ctrl+M): cleans pick/fret/drum noise, bridges dropouts and stitches fragmented notes for accurate instrument MIDI.");
@@ -391,21 +397,37 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     addChildComponent (recordButton);
     recordButton.onClick = [this]
     {
+        if (! polyModeButton.getToggleState())
+        {
+            pitchTrace.toggleMonoRecord();   // Mono: new take (replaces the clip) / stop the take
+            updateClipControls();
+            return;
+        }
         if (clipSession == nullptr) return;
         if (clipSession->getStatus() == Poly::ClipSession::Status::recording) clipSession->stopRecording();
         else clipSession->startRecording();
         updateClipControls();
     };
     clipPlayButton.getProperties().set ("icon", "play");
-    clipPlayButton.setTooltip ("Play / stop the edited clip here (your DAW's transport also plays it in place)");
-    clipPlayButton.setLookAndFeel (&laf);
-    addChildComponent (clipPlayButton);
-    clipPlayButton.onClick = [this]
+    clipStopButton.getProperties().set ("icon", "stop");
+    clipToStartButton.getProperties().set ("icon", "toStart");
+    clipPlayButton.setTooltip ("Play the edited clip here (Space: stop / continue). Your DAW's transport also plays it in place");
+    clipStopButton.setTooltip ("Stop the clip preview (Space: stop / continue)");
+    clipToStartButton.setTooltip ("Back to the start of the clip");
+    for (auto* b : { &clipPlayButton, &clipStopButton, &clipToStartButton })
     {
-        if (clipSession == nullptr) return;
-        clipSession->setPreviewPlaying (! clipSession->isPreviewPlaying());
-        updateClipControls();
-    };
+        b->setLookAndFeel (&laf);
+        addChildComponent (b);
+    }
+    // Keep keyboard focus on the piano roll so Space toggles playback instead of re-clicking the last button.
+    for (juce::Button* b : { (juce::Button*) &clipPlayButton, (juce::Button*) &clipStopButton, (juce::Button*) &clipToStartButton, (juce::Button*) &recordButton })
+    {
+        b->setWantsKeyboardFocus (false);
+        b->setMouseClickGrabsKeyboardFocus (false);
+    }
+    clipPlayButton.onClick = [this] { pitchTrace.setPreviewPlaying (true);  pitchTrace.grabKeyboardFocus(); };
+    clipStopButton.onClick = [this] { pitchTrace.setPreviewPlaying (false); pitchTrace.grabKeyboardFocus(); };
+    clipToStartButton.onClick = [this] { pitchTrace.seekClipToStart();      pitchTrace.grabKeyboardFocus(); };
 
     //--------------------------------------------------------------------------
     // Selected-note inspector
@@ -569,12 +591,12 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
 TuneTab::~TuneTab()
 {
     for (auto* tb : { &editToolButton, &cutToolButton, &advancedToolButton, &drawToolButton, &monoModeButton, &polyModeButton,
-                      &midiCleanButton, &snapScaleButton, &autoScrollButton, &smoothButton, &lookaheadButton, &recordButton })
+                      &midiCleanButton, &snapScaleButton, &snapGridButton, &independentButton, &autoScrollButton, &smoothButton, &lookaheadButton, &recordButton })
         tb->setLookAndFeel (nullptr);
     pitchTrace.onClipStatusChanged = nullptr;
 
     for (auto* btn : { &undoButton, &redoButton, &autoKeyButton, &levelerButton, &dockViewButton, &snapAllButton, &fileMenuButton,
-                       &clipPlayButton, &semiDownButton, &semiUpButton, &resetNoteButton,
+                       &clipPlayButton, &clipStopButton, &clipToStartButton, &semiDownButton, &semiUpButton, &resetNoteButton,
                        &styleNaturalButton, &stylePopButton, &styleHardButton })
         btn->setLookAndFeel (nullptr);
 
@@ -594,15 +616,31 @@ void TuneTab::setClipSession (Poly::ClipSession* session)
 void TuneTab::updateClipControls()
 {
     const bool poly = polyModeButton.getToggleState() && clipSession != nullptr;
-    recordButton.setVisible (poly);
-    clipPlayButton.setVisible (poly);
+    const bool wasVisible = recordButton.isVisible();
+    recordButton.setVisible (poly || ! polyModeButton.getToggleState());
+    for (auto* b : { &clipPlayButton, &clipStopButton, &clipToStartButton })
+    {
+        b->setVisible (true);
+        b->setEnabled (pitchTrace.hasPreviewClip());
+    }
+    if (wasVisible != recordButton.isVisible())
+        layoutBody (getBodyBounds());
+
+    if (! polyModeButton.getToggleState())
+    {
+        using T = PitchTraceQueue::MonoTake;
+        const int ts = pitchTrace.getMonoTakeState();
+        recordButton.setToggleState (ts == T::armed || ts == T::capturing, juce::dontSendNotification);
+        recordButton.setButtonText (ts == T::capturing ? "Stop" : ts == T::armed ? "Armed" : "Rec");
+        recordButton.setTooltip ("Mono take: NovaTone records automatically while your DAW plays (when nothing is loaded). "
+                                 "Rec records a new take that replaces the clip; stop the DAW or press Stop to edit it.");
+        return;
+    }
+    recordButton.setTooltip ("Record a clip: arm, then press play in your DAW. Press again to stop and analyse. Then drag notes to edit chords.");
     if (clipSession == nullptr) return;
     const auto st = clipSession->getStatus();
     recordButton.setToggleState (st == Poly::ClipSession::Status::recording, juce::dontSendNotification);
     recordButton.setButtonText (st == Poly::ClipSession::Status::recording ? "Stop" : "Rec");
-    clipPlayButton.setEnabled (st == Poly::ClipSession::Status::ready);
-    clipPlayButton.getProperties().set ("icon", clipSession->isPreviewPlaying() ? "stop" : "play");
-    clipPlayButton.repaint();
 }
 
 void TuneTab::refreshTheme()
@@ -930,8 +968,8 @@ void TuneTab::layoutBody (juce::Rectangle<int> bounds)
     {
         // Widths shrink together on narrow windows so nothing gets clipped.
         const bool clipCtl = recordButton.isVisible();
-        const int fixedW    = 4 * 34 + (10 + 12 + 12 + 6 + 6 + 12) + (6 + 10 + 6) + 8 + (clipCtl ? 34 + 4 + 12 : 0);
-        const int flexibleW = 4 * 62 + 2 * 58 + 66 + 74 + 96 + 76 + 62 + 66 + (clipCtl ? 66 : 0);
+        const int fixedW    = 4 * 34 + (10 + 12 + 12 + 6 + 6 + 12) + (6 + 10 + 6) + 8 + 3 * 34 + 3 * 4 + 8 + (clipCtl ? 4 : 0) + 6 + 6;
+        const int flexibleW = 4 * 62 + 2 * 58 + 66 + 74 + 96 + 76 + 62 + 66 + 66 + 66 + (clipCtl ? 66 : 0);
         const float k = juce::jlimit (0.70f, 1.0f, (float) (tb.getWidth() - fixedW) / (float) flexibleW);
         auto w = [k] (int px) { return juce::roundToInt ((float) px * k); };
 
@@ -947,10 +985,17 @@ void TuneTab::layoutBody (juce::Rectangle<int> bounds)
         {
             recordButton.setBounds (tb.removeFromLeft (w (66)));
             tb.removeFromLeft (4);
-            clipPlayButton.setBounds (tb.removeFromLeft (34));
-            tb.removeFromLeft (12);
         }
+        for (auto* b : { &clipPlayButton, &clipStopButton, &clipToStartButton })
+        {
+            b->setBounds (tb.removeFromLeft (34));
+            tb.removeFromLeft (4);
+        }
+        independentButton.setBounds (tb.removeFromLeft (w (66)));
+        tb.removeFromLeft (8);
         snapScaleButton.setBounds (tb.removeFromLeft (w (66)));
+        tb.removeFromLeft (6);
+        snapGridButton.setBounds (tb.removeFromLeft (w (66)));
         tb.removeFromLeft (6);
         autoScrollButton.setBounds (tb.removeFromLeft (w (74)));
         tb.removeFromLeft (6);

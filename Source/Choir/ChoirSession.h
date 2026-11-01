@@ -405,6 +405,7 @@ public:
         for (auto& s : strips)
         {
             if (! s.used.load() || s.audio == nullptr || s.mute.load() || (anySolo && ! s.solo.load())) continue;
+            if (s.take < 0 || s.take >= (int) takes.size()) continue; // stale mix.json entry
             const auto& a = *s.audio;
             const float g = juce::Decibels::decibelsToGain (s.levelDb.load()), p = s.pan.load();
             const float gl = g * std::cos ((p + 1.0f) * juce::MathConstants<float>::pi * 0.25f), gr = g * std::sin ((p + 1.0f) * juce::MathConstants<float>::pi * 0.25f);
