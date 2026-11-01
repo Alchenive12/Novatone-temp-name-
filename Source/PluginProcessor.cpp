@@ -457,9 +457,10 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
             hopSlot.hasCustomPitch,
             hopSlot.customPitchMidi,
             hopSlot.fadeMultiplier,
-            hopSlot.rampOutRatio);
+            hopSlot.rampOutRatio,
+            hopSlot.pitchEdit);
     }
-    else if (ovActive)
+    else if (ovActive && playHop <= 0) // a playing clip: notes without their own edit stay as they are
     {
         extraNoteFormant = ov.formantSemitones.load(std::memory_order_relaxed);
         tuneEngine.setLiveNoteOverride(
@@ -988,14 +989,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::crea
     };
 
     layout.add(std::make_unique<APF>("tune_flexAmount",     "Flex Amount", NR(0.0f, 1.0f, 0.001f), startKnobs.speed));
-    layout.add(std::make_unique<APF>("tune_humanizeAmount", "Humanize",    NR(0.0f, 1.0f, 0.001f), 0.50f, percentAttrs()));
+    // Defaults are dry: an imported file plays exactly as sung until notes are edited or the knobs are turned
+    // (Center 0%, Variation 100%, Humanize 0%, Vibrato off). Transition / Sensitivity only matter once correcting.
+    layout.add(std::make_unique<APF>("tune_humanizeAmount", "Humanize",    NR(0.0f, 1.0f, 0.001f), 0.0f, percentAttrs()));
 
-    layout.add(std::make_unique<APF>("tune_center",      "Center",      NR(0.0f, 1.0f, 0.001f), startKnobs.center,      percentAttrs()));
-    layout.add(std::make_unique<APF>("tune_variation",   "Variation",   NR(0.0f, 2.0f, 0.001f), startKnobs.variation,   percentAttrs()));
+    layout.add(std::make_unique<APF>("tune_center",      "Center",      NR(0.0f, 1.0f, 0.001f), 0.0f,                   percentAttrs()));
+    layout.add(std::make_unique<APF>("tune_variation",   "Variation",   NR(0.0f, 2.0f, 0.001f), 1.0f,                   percentAttrs()));
     layout.add(std::make_unique<APF>("tune_transition",  "Transition",  NR(0.0f, 1.0f, 0.001f), startKnobs.transition,  percentAttrs()));
     layout.add(std::make_unique<APF>("tune_sensitivity", "Sensitivity", NR(0.0f, 1.0f, 0.001f), startKnobs.sensitivity, percentAttrs()));
 
-    layout.add(std::make_unique<APB>("tune_snapScale",  "Snap to Scale", true));
+    layout.add(std::make_unique<APB>("tune_snapScale",  "Snap to Scale", false));
     layout.add(std::make_unique<APB>("tune_autoScroll", "Auto-Scroll",   true));
 
     layout.add(std::make_unique<APB>("tune_humanize",   "Humanize Mode",   false));
@@ -1005,7 +1008,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::crea
     layout.add(std::make_unique<APB>("tune_smooth",    "Smooth",    false));
     layout.add(std::make_unique<APB>("tune_sync",      "Sync",      false));
     layout.add(std::make_unique<APF>("tune_character", "Soft/Hard", NR(0.0f, 1.0f, 0.001f), TuneMacro::defaultCharacter, percentAttrs()));
-    layout.add(std::make_unique<APF>("tune_vibrato",   "Vibrato",   NR(0.0f, 100.0f, 1.0f), startKnobs.vibratoCents,
+    layout.add(std::make_unique<APF>("tune_vibrato",   "Vibrato",   NR(0.0f, 100.0f, 1.0f), 0.0f,
         juce::AudioParameterFloatAttributes()
             .withStringFromValueFunction([](float v, int) { return v < 0.5f ? juce::String("OFF") : juce::String(juce::roundToInt(v)) + " c"; })
             .withValueFromStringFunction([](const juce::String& t) { return t.trim().equalsIgnoreCase("off") ? 0.0f : t.getFloatValue(); })));

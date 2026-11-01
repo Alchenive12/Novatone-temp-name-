@@ -421,6 +421,7 @@ void PitchTraceComponent::transposeSelectedNote(int semitoneDelta)
         }
         n.targetMidi = candidate;
         n.userEdited = true;
+        n.pitchEdited = true;
     }
     syncActiveOverrideToEngine();
     notifySelectionChanged();
@@ -437,6 +438,7 @@ void PitchTraceComponent::setSelectedNoteFineCents(float cents)
         {
             n.fineCents  = clamped;
             n.userEdited = true;
+            n.pitchEdited = true;
             changed = true;
         }
     }
@@ -550,6 +552,7 @@ void PitchTraceComponent::resetSelectedNote()
         n.fadeInRatio      = 0.0f;
         n.fadeOutRatio     = 0.0f;
         n.userEdited       = false;
+        n.pitchEdited      = false;
         for (int k = juce::jmax(0, n.startHop); k < juce::jmin(static_cast<int>(timeline.size()), n.endHop); ++k)
             timeline[(size_t)k].hasCustomPitch = false;
     }
@@ -826,6 +829,7 @@ void PitchTraceComponent::snapAllNotesToScale()
         n.targetMidi = snapMidiToScale(n.detectedMidi, mask);
         n.fineCents = 0.0f;
         n.userEdited = true;
+        n.pitchEdited = true;
     }
     syncActiveOverrideToEngine();
     notifySelectionChanged();
@@ -851,6 +855,7 @@ void PitchTraceComponent::resetAllNotes()
         n.fadeOutRatio     = 0.0f;
         n.warpOffsetHops   = 0;
         n.userEdited       = false;
+        n.pitchEdited      = false;
     }
     for (auto& th : timeline)
         th.hasCustomPitch = false;
@@ -1015,40 +1020,54 @@ void PitchTraceComponent::autoDetectKeyAndApply()
 void PitchTraceComponent::levelAllNotesVolume(float levelingAmount0to1)
 {
     const float amt = juce::jlimit(0.0f, 1.0f, levelingAmount0to1);
-    double dbSum = 0.0;
-    int voicedCount = 0;
     const bool anySelected = (getSelectedNoteCount() > 1);
 
+    // Only real sung notes take part: tiny blips and faint ghost notes (Poly picks some up at harmonics,
+    // breath noise in Mono) are left alone - boosting them toward the average made them audible.
+    constexpr int   minHops       = 8;      // ~85 ms
+    constexpr float ghostBelowDb  = 24.0f;  // quieter than the loudest note by more than this = not a real note
+    auto inScope = [&](const NewtoneNoteBlock& n)
+    {
+        return ! n.isSibilant && n.meanRms > 0.0005f && (n.endHop - n.startHop) >= minHops
+            && (! anySelected || n.selected || n.id == selectedNoteId);
+    };
+
+    float loudestDb = -100.0f;
+    for (const auto& n : notes)
+        if (inScope(n))
+            loudestDb = juce::jmax(loudestDb, juce::Decibels::gainToDecibels(n.meanRms, -100.0f));
+
+    double dbSum = 0.0, weightSum = 0.0;
+    int count = 0;
     for (const auto& n : notes)
     {
-        if (n.isSibilant || n.meanRms <= 0.0005f)
-            continue;
-        if (anySelected && !(n.selected || n.id == selectedNoteId))
-            continue;
-        dbSum += static_cast<double>(juce::Decibels::gainToDecibels(n.meanRms, -60.0f));
-        ++voicedCount;
+        if (! inScope(n)) continue;
+        const float noteDb = juce::Decibels::gainToDecibels(n.meanRms, -100.0f);
+        if (noteDb < loudestDb - ghostBelowDb) continue;
+        const double w = static_cast<double>(n.endHop - n.startHop);   // long notes count more than short ones
+        dbSum += w * noteDb; weightSum += w; ++count;
     }
-
-    if (voicedCount <= 0)
+    if (count < 2 || weightSum <= 0.0)
+    {
+        currentCoachHint = "Level needs at least two sung notes.";
+        repaint();
         return;
+    }
 
     pushUndoSnapshot();
-    const float targetMeanDb = static_cast<float>(dbSum / static_cast<double>(voicedCount));
-
+    const float targetMeanDb = static_cast<float>(dbSum / weightSum);
     for (auto& n : notes)
     {
-        if (n.isSibilant || n.meanRms <= 0.0005f)
-            continue;
-        if (anySelected && !(n.selected || n.id == selectedNoteId))
-            continue;
-        const float noteDb = juce::Decibels::gainToDecibels(n.meanRms, -60.0f);
-        const float deltaDb = (targetMeanDb - noteDb) * amt;
-        n.gainDb     = juce::jlimit(-12.0f, 9.0f, deltaDb);
-        n.userEdited = true;
+        if (! inScope(n)) continue;
+        const float noteDb = juce::Decibels::gainToDecibels(n.meanRms, -100.0f);
+        if (noteDb < loudestDb - ghostBelowDb) continue;
+        // Absolute (not added to the current trim): pressing Level again gives the same result.
+        n.gainDb     = juce::jlimit(-12.0f, 9.0f, (targetMeanDb - noteDb) * amt);
+        n.userEdited = true;   // gain only: pitchEdited stays as it was, so the note keeps its pitch
     }
 
-    currentCoachHint = "Levelled " + juce::String(voicedCount)
-                     + " notes toward the phrase average (" + juce::String(targetMeanDb, 1) + " dB).";
+    currentCoachHint = "Levelled " + juce::String(count) + " notes toward the phrase average ("
+                     + juce::String(targetMeanDb, 1) + " dB). Ctrl+Z to undo.";
     syncActiveOverrideToEngine();
     notifySelectionChanged();
     repaint();
@@ -1079,6 +1098,7 @@ void PitchTraceComponent::paintFreehandStrokeBetween(juce::Point<float> p0, juce
             if (auto* nb = findNoteById(th.noteId))
             {
                 nb->userEdited = true;
+                nb->pitchEdited = true;
                 selectedNoteId = nb->id;
             }
         }
@@ -1434,6 +1454,7 @@ void PitchTraceComponent::rebuildSegmentationFromSensitivity()
                 nb.fadeInRatio      = saved.fadeInRatio;
                 nb.fadeOutRatio     = saved.fadeOutRatio;
                 nb.userEdited       = true;
+                nb.pitchEdited      = saved.pitchEdited;
                 break;
             }
         }
@@ -1504,6 +1525,7 @@ void PitchTraceComponent::rebuildSegmentationFromSensitivity()
                     tr.block.rampInRatio      = saved.rampInRatio;
                     tr.block.rampOutRatio     = saved.rampOutRatio;
                     tr.block.userEdited       = true;
+                    tr.block.pitchEdited      = saved.pitchEdited;
                     break;
                 }
             }
@@ -1922,6 +1944,7 @@ void PitchTraceComponent::syncActiveOverrideToEngine()
             slot.fadeMultiplier   = fadeEnv;
             slot.hasCustomPitch   = timeline[(size_t)h].hasCustomPitch;
             slot.customPitchMidi  = timeline[(size_t)h].customMidi;
+            slot.pitchEdit        = n.pitchEdited || slot.hasCustomPitch;
             queue.setHopOverride(h, slot);
         }
     }
@@ -2413,6 +2436,7 @@ void PitchTraceComponent::joinNoteWithNext(int noteIndex)
 
     first.endHop     = second.endHop;
     first.userEdited = true;
+    first.pitchEdited = first.pitchEdited || second.pitchEdited;
 
     for (int k = first.startHop; k < first.endHop && k < static_cast<int>(timeline.size()); ++k)
         timeline[(size_t)k].noteId = first.id;
@@ -3247,6 +3271,7 @@ void PitchTraceComponent::mouseDown(const juce::MouseEvent& e)
                     n.targetMidi = clickedMidi;
                     n.fineCents  = 0.0f;
                     n.userEdited = true;
+                    n.pitchEdited = true;
                 }
             }
             syncActiveOverrideToEngine();
@@ -3333,12 +3358,14 @@ void PitchTraceComponent::mouseDown(const juce::MouseEvent& e)
                 n.formantSemitones = 0.0f;
                 n.gainDb           = 0.0f;
                 n.userEdited       = false;
+                n.pitchEdited      = false;
             }
             else
             {
                 n.targetMidi = snapMidiToScale(n.detectedMidi, scaleMask);
                 n.fineCents  = 0.0f;
                 n.userEdited = true;
+                n.pitchEdited = true;
             }
         }
         syncActiveOverrideToEngine();
@@ -3485,6 +3512,7 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
                 const int rawTarget = juce::jlimit(12, 108, startM + deltaMidi);
                 n.targetMidi = snapToScaleEnabled ? snapMidiToScale(static_cast<float>(rawTarget), scaleMask) : rawTarget;
                 n.userEdited = true;
+                n.pitchEdited = true;
             }
             break;
         }
@@ -3505,6 +3533,7 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
                 n.targetMidi = juce::jlimit(12, 108, startM + semitoneCarry);
                 n.fineCents  = juce::jlimit(-50.0f, 50.0f, totalCents);
                 n.userEdited = true;
+                n.pitchEdited = true;
             }
             break;
         }

@@ -602,6 +602,93 @@ int main(int argc, char** argv)
         }
     }
 
+    if (argc > 8 && juce::String(argv[8]) == "level")
+    {
+        // Loud / quiet notes; press Level; per-note output level + pitch (zero crossings) before and after.
+        std::unique_ptr<juce::AudioProcessorEditor> med(proc->createEditor());
+        med->setSize(w, h); med->setVisible(true);
+        auto* roll = findRoll(*med);
+        auto& q = np->getPitchTraceQueue();
+        for (auto kv : juce::StringArray::fromTokens(juce::SystemStats::getEnvironmentVariable("TEST_PARAMS", ""), ",", ""))
+            if (auto* prm = np->apvts.getParameter(kv.upToFirstOccurrenceOf("=", false, false)))
+                prm->setValueNotifyingHost(prm->convertTo0to1(kv.fromFirstOccurrenceOf("=", false, false).getFloatValue()));
+        const bool polyLoad = argc > 9 && juce::String(argv[9]) == "poly";
+        if (polyLoad) if (auto* p = np->apvts.getParameter("tune_polyphonic")) p->setValueNotifyingHost(1.0f);
+        pump(300);
+        const double sr = 48000.0; const int N = (int) (8 * sr);
+        juce::AudioBuffer<float> voc(1, N); double vph = 0;
+        const double freqs[] = { 226.0, 240.0, 268.0, 285.0 };   // a bit off-pitch on purpose (246, 293)
+        const float amps[] = { 0.06f, 0.35f, 0.06f, 0.35f };
+        for (int i = 0; i < N; ++i)
+        {
+            const double t = i / sr; const int k = (int) (t / 2.0) % 4; const double ph2 = std::fmod(t, 2.0);
+            float smp = 0.0f;
+            if (ph2 < 1.6)
+            {
+                vph += 2 * 3.14159265 * freqs[k] * std::pow(2.0, (0.35 * std::sin(t * 2 * 3.14159 * 5.5) + 0.4 * std::sin(t * 1.3)) / 12.0) / sr;
+                const double env = juce::jmin(1.0, ph2 / 0.05) * juce::jmin(1.0, (1.6 - ph2) / 0.05);
+                double hs = 0; for (int hN = 1; hN <= 12; ++hN) hs += std::sin(hN * vph) / (hN * (hN > 2 ? 1.6 : 1.0));
+                smp = (float) (amps[k] * env * (juce::SystemStats::getEnvironmentVariable("TEST_RICH", "0") == "1" ? 0.6 * hs : std::sin(vph) + 0.3 * std::sin(2 * vph)));
+            }
+            voc.setSample(0, i, smp);
+        }
+        const auto wav = outDir.getChildFile("levelvocal.wav"); wav.deleteFile();
+        { std::unique_ptr<juce::AudioFormatWriter> wr(juce::WavAudioFormat().createWriterFor(new juce::FileOutputStream(wav), sr, 1, 24, {}, 0)); wr->writeFromAudioSampleBuffer(voc, 0, N); }
+        roll->filesDropped(juce::StringArray(wav.getFullPathName()), 0, 0);
+        const auto t0 = juce::Time::getMillisecondCounter();
+        while (! roll->hasPreviewClip() && juce::Time::getMillisecondCounter() - t0 < 60000) pump(50);
+        pump(300);
+        auto playAndMeasure = [&](const char* label)
+        {
+            if (polyLoad) { auto& c = np->getPolyClip(); const auto t1 = juce::Time::getMillisecondCounter(); pump(200); while (! c.isRenderCurrent() && juce::Time::getMillisecondCounter() - t1 < 30000) pump(50); }
+            roll->seekClipToStart(); roll->setPreviewPlaying(true);
+            juce::AudioBuffer<float> out(1, N + 48000); int w0 = 0;
+            while (w0 + 512 <= out.getNumSamples() && roll->isPreviewPlaying())
+            { buf.clear(); proc->processBlock(buf, midi); out.copyFrom(0, w0, buf, 0, 0, 512); w0 += 512; }
+            roll->setPreviewPlaying(false);
+            const int lat = proc->getLatencySamples();
+            std::cout << label << " (lat " << lat << "):";
+            for (int k = 0; k < 4; ++k)
+            {
+                const int a = (int) ((k * 2.0 + 0.4) * sr) + lat, b = (int) ((k * 2.0 + 1.2) * sr) + lat;
+                double e = 0; int zc = 0;
+                for (int i = a; i < b && i < w0; ++i) { const float x = out.getSample(0, i); e += x * x; if (i > a && (x >= 0) != (out.getSample(0, i - 1) >= 0)) ++zc; }
+                const double rms = std::sqrt(e / (b - a));
+                std::cout << "  n" << k << " " << juce::String(juce::Decibels::gainToDecibels((float) rms), 1) << "dB " << juce::String(zc / 2.0 / ((b - a) / sr), 0) << "Hz";
+            }
+            // How dry is it? Pitch contour (40 ms windows, zero crossings) of output vs input, voiced middles only
+            auto zcHz = [&](const float* d, int from, int len) { int z = 0; for (int i = from + 1; i < from + len; ++i) if ((d[i] >= 0) != (d[i - 1] >= 0)) ++z; return z / 2.0 / (len / sr); };
+            double sumC = 0, maxC = 0; int nw = 0; const int win = (int) (0.04 * sr);
+            for (int k = 0; k < 4; ++k)
+                for (int i = (int) ((k * 2.0 + 0.2) * sr); i + win < (int) ((k * 2.0 + 1.4) * sr); i += win)
+                {
+                    if (i + lat + win >= w0) break;
+                    const double fi = zcHz(voc.getReadPointer(0), i, win), fo = zcHz(out.getReadPointer(0), i + lat, win);
+                    const double c = std::abs(1200.0 * std::log2(fo / fi));
+                    sumC += c; maxC = juce::jmax(maxC, c); ++nw;
+                }
+            std::cout << "  | pitch vs dry: mean " << juce::String(sumC / juce::jmax(1, nw), 1) << "c, max " << juce::String(maxC, 0) << "c";
+            std::cout << "\n";
+        };
+        playAndMeasure("before Level");
+        roll->levelAllNotesVolume(0.72f);
+        pump(300);
+        if (juce::SystemStats::getEnvironmentVariable("TEST_NOTES", "0") == "1")
+            for (const auto& n : roll->getNotesForTests())
+                std::cout << "  note " << n.id << " lane " << n.voiceLane << " hops " << n.startHop << "-" << n.endHop << " midi " << juce::String(n.detectedMidi, 2)
+                          << " rms " << juce::String(juce::Decibels::gainToDecibels(n.meanRms), 1) << "dB gain " << juce::String(n.gainDb, 1) << (n.isSibilant ? " sib" : "") << "\n";
+        playAndMeasure("after Level ");
+        roll->selectAdjacentNote(1);
+        if (auto* sn = roll->getSelectedNote())
+            std::cout << "selected: id " << sn->id << " hops " << sn->startHop << "-" << sn->endHop << " det " << sn->detectedMidi << " tgt " << sn->targetMidi << " count " << roll->getSelectedNoteCount() << "\n";
+        roll->transposeSelectedNote(1);   // first note +1 semitone: an edit must still land with Center at 0%
+        if (auto* sn = roll->getSelectedNote()) std::cout << "after: tgt " << sn->targetMidi << " pitchEdited " << sn->pitchEdited << "\n";
+        pump(300);
+        playAndMeasure("n0 +1 st    ");
+        save(*med, outDir.getChildFile("level.png"), 1.0f);
+        med.reset(); proc->releaseResources(); return 0;
+    }
+
     if (argc > 8 && (juce::String(argv[8]) == "monoload" || juce::String(argv[8]) == "idle"))
     {
         std::unique_ptr<juce::AudioProcessorEditor> med(proc->createEditor());

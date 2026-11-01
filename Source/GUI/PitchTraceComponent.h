@@ -65,6 +65,7 @@ public:
     bool isPreviewPlaying() const;
     float getViewStartHop() const noexcept { return viewStartHop; }   // tests
     int   getTimelineSize() const noexcept { return static_cast<int>(timeline.size()); }
+    const std::vector<NewtoneNoteBlock>& getNotesForTests() const noexcept { return notes; }
     /** Space bar: stop / continue from where it stopped. */
     void togglePreviewPlaying();
 
@@ -289,7 +290,7 @@ private:
 
     ToolMode   currentToolMode       = ToolMode::StandardEdit;
     DragAction currentDragAction     = DragAction::None;
-    bool       snapToScaleEnabled    = true;
+    bool       snapToScaleEnabled    = false;
     bool       snapToGridEnabled     = false;
     bool       autoScrollEnabled     = true;
     bool       polyphonicModeEnabled = false;

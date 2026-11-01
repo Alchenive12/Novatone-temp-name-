@@ -122,9 +122,10 @@ public:
                              float noteVariation, float gainDb, float rampIn,
                              float sibilantDb = 0.0f, bool hasCustomPitch = false,
                              float customPitchMidi = 60.0f, float fadeMultiplier = 1.0f,
-                             float rampOut = 0.18f) noexcept
+                             float rampOut = 0.18f, bool pitchEdit = true) noexcept
     {
         overrideActive          = active;
+        overridePitchEdit       = pitchEdit;
         overrideTargetMidi      = targetMidi;
         overrideCenter          = noteCenter;
         overrideVariation       = noteVariation;
@@ -822,6 +823,7 @@ private:
         float noteCenterMult = 1.0f;
         float noteVarMult = 1.0f;
         float noteRampIn = 0.18f;
+        bool  centerAbsolute = false;   // a pitch-edited note lands on its target whatever the global Center is
 
         // Upgrade #4: Real-Time MIDI Target Note Override (if a live MIDI note is held on the input)
         if (midiTargetNote >= 0 && midiTargetNote <= 127)
@@ -833,10 +835,14 @@ private:
         }
         else if (overrideActive && std::abs(overrideTargetMidi - detectedMidi) <= 12.0f)
         {
-            targetMidi     = overrideTargetMidi;
             noteCenterMult = overrideCenter;
             noteVarMult    = overrideVariation;
             noteRampIn     = overrideRampIn;
+            if (overridePitchEdit)
+            {
+                targetMidi     = overrideTargetMidi;
+                centerAbsolute = true;
+            }
         }
 
         const float range = vibratoFound ? juce::jmax(vibratoDepthSemitones, vibratoTracker.depth()) : 0.0f;
@@ -891,8 +897,13 @@ private:
         }
         updateHeldNote(detectedMidi);
 
-        const float desiredMidi = computeDesiredMidiAtHop(
-            detectedMidi, targetMidi, phraseOnset, noteCenterMult, noteVarMult, noteRampIn, mpmRes.clarity);
+        // Dry: Center 0%, Variation 100%, Humanize off, no pitch edit / MIDI target -> the voice is left exactly as sung.
+        const bool dryNote = midiTargetNote < 0 && ! centerAbsolute
+                          && centerAmount * noteCenterMult < 0.002f && smoothedCenterAmount * noteCenterMult < 0.002f
+                          && std::abs(variationAmount * noteVarMult - 1.0f) < 0.01f
+                          && getTargetHumanizeDrive() < 0.01f && smoothedHumanizeGate < 0.01f;
+        const float desiredMidi = dryNote ? detectedMidi : computeDesiredMidiAtHop(
+            detectedMidi, targetMidi, phraseOnset, noteCenterMult, noteVarMult, noteRampIn, mpmRes.clarity, centerAbsolute);
 
         const float correction = juce::jlimit(-12.0f, 12.0f, desiredMidi - detectedMidi);
 
@@ -1024,7 +1035,7 @@ private:
 
     float computeDesiredMidiAtHop(float detectedMidi, float targetMidi, bool phraseOnset,
                                   float noteCenterMult, float noteVarMult, float noteRampIn,
-                                  float frameClarity) noexcept
+                                  float frameClarity, bool centerAbsolute = false) noexcept
     {
         // Upgrade #3: If the user painted a custom freehand curve (`4. DRAW CURVE`) on the active hop,
         // follow the custom drawn pitch directly:
@@ -1059,7 +1070,7 @@ private:
         // 2. Soft-Zone Pitch Attractor + Drift Flattening:
         //    Pulls both the fast vibrato centre and the perceptual note anchor toward `targetMidi`
         //    so `Center = 50%` always cuts off-scale error in half while `Humanize` shapes the pocket & expression.
-        const float baseCenter = juce::jlimit(0.0f, 1.0f, smoothedCenterAmount * noteCenterMult);
+        const float baseCenter = juce::jlimit(0.0f, 1.0f, centerAbsolute ? noteCenterMult : smoothedCenterAmount * noteCenterMult);
         const float effCenter  = baseCenter * (1.0f - 0.06f * hDrive);
         const float anchorRef  = (perceptualNoteAnchorMidi > 0.0f)
             ? (0.65f * centre + 0.35f * perceptualNoteAnchorMidi)
@@ -1347,6 +1358,7 @@ private:
     SmoothingFilter  smoother;
     PsolaShifter     shifter;
     bool  overrideActive          = false;
+    bool  overridePitchEdit       = true;   // false: gain/formant-only edit, pitch follows the global knobs
     float overrideTargetMidi      = 60.0f;
     float overrideCenter          = 1.0f;
     float overrideVariation       = 1.0f;

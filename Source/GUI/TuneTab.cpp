@@ -289,6 +289,7 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     styleChip (independentButton, "mint");
     independentButton.setTooltip ("Independent: Play / Stop run the clip on NovaTone's own playhead, ignoring FL Studio's transport and song position");
     independentButton.onStateChange = [this] { pitchTrace.setIndependentPlay (independentButton.getToggleState()); };
+    independentButton.setToggleState (true, juce::sendNotificationSync);   // on by default: NovaTone's own transport
     styleChip (autoScrollButton, "cyan");
     styleChip (midiCleanButton,  "mint");
     midiCleanButton.setTooltip ("MIDI clean (Ctrl+M): cleans pick/fret/drum noise, bridges dropouts and stitches fragmented notes for accurate instrument MIDI.");
@@ -342,7 +343,7 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     if (apvts.getParameter ("tune_snapScale") != nullptr)
         snapScaleAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (apvts, "tune_snapScale", snapScaleButton);
     else
-        snapScaleButton.setToggleState (true, juce::dontSendNotification);
+        snapScaleButton.setToggleState (false, juce::dontSendNotification);
 
     if (apvts.getParameter ("tune_autoScroll") != nullptr)
         autoScrollAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (apvts, "tune_autoScroll", autoScrollButton);
@@ -546,7 +547,7 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
 
     humanizeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     humanizeSlider.setRange (0.0, 1.0, 0.01);
-    humanizeSlider.setDoubleClickReturnValue (true, 0.50);
+    humanizeSlider.setDoubleClickReturnValue (true, 0.0);
     humanizeSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 44, 20);
     humanizeSlider.setColour (juce::Slider::textBoxTextColourId, HarmonyEngineColours::textPrimary);
     humanizeSlider.getProperties().set ("ringRole", "mint");

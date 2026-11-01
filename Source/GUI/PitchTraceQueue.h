@@ -43,6 +43,7 @@ struct NewtoneNoteBlock
     float meanRms          = 0.05f;  ///< Mean RMS amplitude of the note (for blob rendering & Leveler macro).
     bool  isSibilant       = false;  ///< True if this block represents a protected unvoiced consonant.
     bool  userEdited       = false;  ///< True once manually edited by the user in the Piano Roll.
+    bool  pitchEdited      = false;  ///< Pitch / cents / curve changed by the user (gain-only edits like Level leave it false).
     bool  selected         = false;  ///< GUI selection state (Ctrl+A / Ctrl+Click).
 
     float effectiveTargetMidi() const noexcept
@@ -236,6 +237,7 @@ public:
         float fadeMultiplier   = 1.0f;
         bool  hasCustomPitch   = false;
         float customPitchMidi  = 60.0f;
+        bool  pitchEdit        = true;   ///< false: gain/formant/etc. only - the note keeps its own (dry) pitch
     };
 
     /** Begins a lock-free GUI-thread update in the inactive back-buffer. */
