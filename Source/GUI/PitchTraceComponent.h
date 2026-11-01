@@ -62,6 +62,14 @@ public:
     void seekClipToStart();
     /** Independent: preview ignores the DAW transport/position (plays only from Play / Stop). */
     void setIndependentPlay(bool independent);
+    bool isPreviewPlaying() const;
+    /** Space bar: stop / continue from where it stopped. */
+    void togglePreviewPlaying();
+
+    /** Mono Rec: arm a new take (replaces the clip), or stop the take being recorded. */
+    void toggleMonoRecord();
+    /** PitchTraceQueue::MonoTake::State */
+    int getMonoTakeState() const noexcept { return queue.monoTake.state.load(std::memory_order_relaxed); }
 
     void setAutoScroll(bool shouldFollow) noexcept;
     bool isAutoScroll() const noexcept { return autoScrollEnabled; }
@@ -320,6 +328,8 @@ private:
     int  clipHopSize  = 512;
     int  clipPlayHop  = -1;
     int  lastFilePlayHop = -1;
+    int  lastMonoTakeState = 0;
+    void adoptMonoTake();          // finished take -> Mono clip (analysed like a dropped file)
     bool loadingSample = false;   // Mono file load in progress (loading screen)
     int  lastClipStatus = -1;
 

@@ -397,6 +397,12 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     addChildComponent (recordButton);
     recordButton.onClick = [this]
     {
+        if (! polyModeButton.getToggleState())
+        {
+            pitchTrace.toggleMonoRecord();   // Mono: new take (replaces the clip) / stop the take
+            updateClipControls();
+            return;
+        }
         if (clipSession == nullptr) return;
         if (clipSession->getStatus() == Poly::ClipSession::Status::recording) clipSession->stopRecording();
         else clipSession->startRecording();
@@ -405,17 +411,23 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     clipPlayButton.getProperties().set ("icon", "play");
     clipStopButton.getProperties().set ("icon", "stop");
     clipToStartButton.getProperties().set ("icon", "toStart");
-    clipPlayButton.setTooltip ("Play the edited clip here (your DAW's transport also plays it in place)");
-    clipStopButton.setTooltip ("Stop the clip preview");
+    clipPlayButton.setTooltip ("Play the edited clip here (Space: stop / continue). Your DAW's transport also plays it in place");
+    clipStopButton.setTooltip ("Stop the clip preview (Space: stop / continue)");
     clipToStartButton.setTooltip ("Back to the start of the clip");
     for (auto* b : { &clipPlayButton, &clipStopButton, &clipToStartButton })
     {
         b->setLookAndFeel (&laf);
         addChildComponent (b);
     }
-    clipPlayButton.onClick = [this] { pitchTrace.setPreviewPlaying (true); };
-    clipStopButton.onClick = [this] { pitchTrace.setPreviewPlaying (false); };
-    clipToStartButton.onClick = [this] { pitchTrace.seekClipToStart(); };
+    // Keep keyboard focus on the piano roll so Space toggles playback instead of re-clicking the last button.
+    for (juce::Button* b : { (juce::Button*) &clipPlayButton, (juce::Button*) &clipStopButton, (juce::Button*) &clipToStartButton, (juce::Button*) &recordButton })
+    {
+        b->setWantsKeyboardFocus (false);
+        b->setMouseClickGrabsKeyboardFocus (false);
+    }
+    clipPlayButton.onClick = [this] { pitchTrace.setPreviewPlaying (true);  pitchTrace.grabKeyboardFocus(); };
+    clipStopButton.onClick = [this] { pitchTrace.setPreviewPlaying (false); pitchTrace.grabKeyboardFocus(); };
+    clipToStartButton.onClick = [this] { pitchTrace.seekClipToStart();      pitchTrace.grabKeyboardFocus(); };
 
     //--------------------------------------------------------------------------
     // Selected-note inspector
@@ -604,12 +616,27 @@ void TuneTab::setClipSession (Poly::ClipSession* session)
 void TuneTab::updateClipControls()
 {
     const bool poly = polyModeButton.getToggleState() && clipSession != nullptr;
-    recordButton.setVisible (poly);
+    const bool wasVisible = recordButton.isVisible();
+    recordButton.setVisible (poly || ! polyModeButton.getToggleState());
     for (auto* b : { &clipPlayButton, &clipStopButton, &clipToStartButton })
     {
         b->setVisible (true);
         b->setEnabled (pitchTrace.hasPreviewClip());
     }
+    if (wasVisible != recordButton.isVisible())
+        layoutBody (getBodyBounds());
+
+    if (! polyModeButton.getToggleState())
+    {
+        using T = PitchTraceQueue::MonoTake;
+        const int ts = pitchTrace.getMonoTakeState();
+        recordButton.setToggleState (ts == T::armed || ts == T::capturing, juce::dontSendNotification);
+        recordButton.setButtonText (ts == T::capturing ? "Stop" : ts == T::armed ? "Armed" : "Rec");
+        recordButton.setTooltip ("Mono take: NovaTone records automatically while your DAW plays (when nothing is loaded). "
+                                 "Rec records a new take that replaces the clip; stop the DAW or press Stop to edit it.");
+        return;
+    }
+    recordButton.setTooltip ("Record a clip: arm, then press play in your DAW. Press again to stop and analyse. Then drag notes to edit chords.");
     if (clipSession == nullptr) return;
     const auto st = clipSession->getStatus();
     recordButton.setToggleState (st == Poly::ClipSession::Status::recording, juce::dontSendNotification);

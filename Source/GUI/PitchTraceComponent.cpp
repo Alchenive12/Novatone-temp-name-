@@ -628,6 +628,64 @@ void PitchTraceComponent::setPreviewPlaying(bool shouldPlay)
     mp.playing.store(shouldPlay);
 }
 
+bool PitchTraceComponent::isPreviewPlaying() const
+{
+    if (isClipMode())
+        return clipSession->isPreviewPlaying();
+    return queue.monoPreview.playing.load();
+}
+
+void PitchTraceComponent::togglePreviewPlaying()
+{
+    if (! hasPreviewClip()) return;
+    setPreviewPlaying(! isPreviewPlaying());
+}
+
+void PitchTraceComponent::toggleMonoRecord()
+{
+    using T = PitchTraceQueue::MonoTake;
+    auto& t = queue.monoTake;
+    int st = t.state.load();
+    if (st == T::capturing)
+        t.stopRequested.store(true);                    // the audio thread ends the take
+    else if (st == T::armed)
+        t.state.compare_exchange_strong(st, T::idle);   // cancel
+    else if (st == T::idle)
+    {
+        queue.monoPreview.playing.store(false);
+        t.state.compare_exchange_strong(st, T::armed);
+    }
+    timerCallback();
+}
+
+void PitchTraceComponent::adoptMonoTake()
+{
+    auto& t = queue.monoTake;
+    const int len = t.length.load(std::memory_order_acquire);
+    const juce::int64 songStart = t.songStart.load();
+    if (len <= 0 || t.audio.getNumSamples() < len)
+    {
+        t.state.store(PitchTraceQueue::MonoTake::idle);
+        return;
+    }
+    juce::AudioBuffer<float> take(2, len);
+    for (int ch = 0; ch < 2; ++ch)
+        take.copyFrom(ch, 0, t.audio, ch, 0, len);
+    const double rate = t.rate;
+    t.state.store(PitchTraceQueue::MonoTake::idle, std::memory_order_release);
+
+    loadingSample = true;
+    repaint();
+    if (auto* peer = getPeer()) peer->performAnyPendingRepaintsNow();
+    const juce::ScopeGuard hideLoading { [this] { loadingSample = false; repaint(); } };
+
+    queue.clearHopOverrides();      // live edits were keyed to the live roll, not to the take
+    analyzeAudioBufferIntoNotes(take, rate);
+    queue.monoPreview.timelineStart.store(songStart);
+    queue.currentPlayheadHop.store(0, std::memory_order_relaxed);
+    currentCoachHint = "Take ready: edit notes, then Play or press Space. Rec records a new take; File > Clear goes back to live.";
+}
+
 void PitchTraceComponent::seekClipToStart()
 {
     if (isClipMode())
@@ -814,6 +872,7 @@ void PitchTraceComponent::clearTimeline()
     referenceGhostNotes.clear();
     loadedAudioClip.setSize(0, 0);
     queue.monoPreview.clear();
+    queue.monoTake.state.store(PitchTraceQueue::MonoTake::idle); // back to live; the next DAW play records a new take
     selectedNoteId = -1;
     hoveredNoteId = -1;
     advancedEditNoteId = -1;
@@ -1923,6 +1982,43 @@ void PitchTraceComponent::timerCallback()
         return;
     }
 
+    if (! polyphonicModeEnabled)
+    {
+        using T = PitchTraceQueue::MonoTake;
+        const int ts = queue.monoTake.state.load(std::memory_order_acquire);
+        if (ts == T::done)
+        {
+            popScratch.clear();
+            adoptMonoTake();
+            lastMonoTakeState = T::idle;
+            if (onClipStatusChanged) onClipStatusChanged();
+            return;
+        }
+        if (ts != lastMonoTakeState)
+        {
+            if (ts == T::armed)          currentCoachHint = "Rec armed: press play in your DAW (or start singing) to record a take.";
+            else if (ts == T::capturing) currentCoachHint = "Recording take... stop your DAW (or press Stop) to edit it here.";
+            lastMonoTakeState = ts;
+            needsRepaint = true;
+            if (onClipStatusChanged) onClipStatusChanged();
+        }
+        if (ts == T::armed || ts == T::capturing)
+        {
+            // A new take replaces the loaded clip: show it coming in live.
+            if (loadedAudioClip.getNumSamples() > 0 && ts == T::capturing)
+            {
+                loadedAudioClip.setSize(0, 0);
+                queue.monoPreview.clear();
+                queue.clearHopOverrides();
+                timeline.clear();
+                notes.clear();
+                selectedNoteId = -1;
+                viewStartHop = 0.0f;
+                needsRepaint = true;
+            }
+        }
+    }
+
     if (loadedAudioClip.getNumSamples() > 0)
     {
         // A loaded file owns the timeline: live hops (incl. the preview's own) would append to it and
@@ -2833,6 +2929,13 @@ bool PitchTraceComponent::keyPressed(const juce::KeyPress& key)
 {
     const auto mods = key.getModifiers();
     const int code  = key.getKeyCode();
+
+    // Space: stop / continue the clip on NovaTone's own transport (Mono and Poly)
+    if (code == juce::KeyPress::spaceKey && ! mods.isCommandDown() && ! mods.isCtrlDown() && ! mods.isAltDown())
+    {
+        togglePreviewPlaying();
+        return true;
+    }
 
     if (mods.isCommandDown() || mods.isCtrlDown())
     {

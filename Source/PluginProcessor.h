@@ -49,7 +49,9 @@ public:
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     /** Mono mode Play: replaces the input with the loaded clip (see PitchTraceQueue::MonoPreview). */
-    void renderMonoPreview(juce::AudioBuffer<float>&);
+    void renderMonoPreview(juce::AudioBuffer<float>&, std::optional<juce::int64> hostSample, bool hostPlaying);
+    /** Mono: records the input into PitchTraceQueue::MonoTake while the DAW plays (see there). */
+    void captureMonoTake(const juce::AudioBuffer<float>&, std::optional<juce::int64> hostSample, bool hostPlaying) noexcept;
     void clearMidiState();
 
     juce::AudioProcessorEditor* createEditor() override;

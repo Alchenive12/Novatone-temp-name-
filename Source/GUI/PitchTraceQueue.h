@@ -321,18 +321,57 @@ public:
         int    hopSamples = 512;                     // clip-rate samples per roll hop
         std::atomic<bool>   playing { false };
         std::atomic<double> pos { 0.0 };             // clip-rate samples
+        std::atomic<bool>   loaded { false };        // lock-free "a clip is loaded" for the audio thread
+        /** Song position (session-rate samples) of clip sample 0, or -1 (a dropped file: not tied to the song). */
+        std::atomic<juce::int64> timelineStart { -1 };
 
-        void setClip (const juce::AudioBuffer<float>& b, double rate, int hop)
+        void setClip (const juce::AudioBuffer<float>& b, double rate, int hop, juce::int64 songStart = -1)
         {
             auto c = std::make_shared<const juce::AudioBuffer<float>> (b);
             playing.store (false);
             const juce::SpinLock::ScopedLockType sl (lock);
             clip = std::move (c); clipRate = rate; hopSamples = hop; pos.store (0.0);
+            timelineStart.store (songStart);
+            loaded.store (true);
         }
-        void clear() { playing.store (false); const juce::SpinLock::ScopedLockType sl (lock); clip.reset(); }
+        void clear()
+        {
+            playing.store (false);
+            const juce::SpinLock::ScopedLockType sl (lock);
+            clip.reset(); loaded.store (false); timelineStart.store (-1);
+        }
         bool hasClip() { const juce::SpinLock::ScopedLockType sl (lock); return clip != nullptr; }
     };
     MonoPreview monoPreview;
+
+    /** Mono take: the input audio recorded while the DAW plays (automatic when nothing is loaded,
+        or after Rec). When it ends (DAW stops / loops / Stop) the GUI turns it into the Mono clip,
+        so Play / Stop / Back-to-start work on it like in Poly. Audio thread writes; GUI reads only in `done`. */
+    struct MonoTake
+    {
+        enum State : int { idle = 0, armed = 1, capturing = 2, done = 3 };
+        static constexpr double maxSeconds = 45.0;   // same cap as a dropped file
+
+        std::atomic<int>  state { idle };
+        std::atomic<bool> stopRequested { false };
+        std::atomic<int>  length { 0 };
+        std::atomic<juce::int64> songStart { -1 };   // host sample of take sample 0, -1 = not tied to the song
+        juce::AudioBuffer<float> audio;              // pre-allocated in prepare (2 ch)
+        double rate = 48000.0;
+
+        // audio thread only
+        juce::int64 nextHostSample = -1;
+        float peak = 0.0f;
+
+        void prepare (double sampleRate)
+        {
+            state.store (idle);
+            length.store (0);
+            rate = sampleRate;
+            audio.setSize (2, static_cast<int> (sampleRate * maxSeconds) + 1, false, true, false);
+        }
+    };
+    MonoTake monoTake;
     /** Clip preview plays from its own playhead and ignores the host's transport and position. */
     std::atomic<bool> independentPlay { false };
     std::atomic<int>   vocalRangeMode     { 0 }; ///< 0=Full, 1=Soprano, 2=Alto, 3=Tenor, 4=Bass
