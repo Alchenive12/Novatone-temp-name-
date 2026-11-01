@@ -30,6 +30,7 @@ class TuneTab : public ModuleTab
 public:
     explicit TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& queue);
     std::vector<MidiChordTrack::LeadNote> leadNotesForAlignment (double bpm) const { return pitchTrace.leadNotesForAlignment (bpm); }
+    void setOfflineRenderer (decltype (PitchTraceComponent::offlineRender) fn) { pitchTrace.offlineRender = std::move (fn); }
     ~TuneTab() override;
 
     void refreshTheme();

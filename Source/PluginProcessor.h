@@ -75,6 +75,12 @@ public:
 
     PitchTraceQueue& getPitchTraceQueue() noexcept { return pitchQueue; }
 
+    /** Mono WAV export: renders `clip` through a fresh copy of the playback chain (Tune -> Alter, same settings
+        and note edits per hop, latency removed), so the file sounds like what you hear. Any thread.
+        progress(0..1) returns false to cancel. */
+    bool renderMonoClipOffline(const juce::AudioBuffer<float>& clip, double clipRate, int hopSamples,
+                               juce::AudioBuffer<float>& out, const std::function<bool(float)>& progress);
+
     /** Linear peak per channel (L, R) since the GUI last took it (exchange with 0). */
     using PeakMeter = std::array<std::atomic<float>, 2>;
     PeakMeter& getInputPeakMeter() noexcept { return inputPeak; }
@@ -125,6 +131,9 @@ private:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void pushParametersToEngines() noexcept;
+    /** Tune / Alter settings + the note edit at `engineHop` (shared by playback and the offline WAV export).
+        Returns the note's formant shift. */
+    float configureEngines(TuneEngine& te, AlterEngine& ae, int engineHop, bool allowLiveOverride) noexcept;
     uint16_t packScaleDegreeMask() const noexcept;
 
     void parameterChanged(const juce::String& parameterID, float newValue) override;

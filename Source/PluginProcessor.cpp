@@ -389,7 +389,7 @@ uint16_t NovaToneAudioProcessor::packScaleDegreeMask() const noexcept
     return mask;
 }
 
-void NovaToneAudioProcessor::pushParametersToEngines() noexcept
+float NovaToneAudioProcessor::configureEngines(TuneEngine& te, AlterEngine& ae, int engineHop, bool allowLiveOverride) noexcept
 {
     auto load = [](const std::atomic<float>* p, float fallback) noexcept {
         return p != nullptr ? p->load(std::memory_order_relaxed) : fallback;
@@ -403,110 +403,159 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
     const float globalForm  = load(alterFormantParam,    0.0f);
     const uint16_t scaleMask = packScaleDegreeMask();
 
-    tuneEngine.setFlexAmount(transition);
+    te.setFlexAmount(transition);
     const float humanizeAmt = juce::jlimit(0.0f, 1.0f, load(tuneHumanizeAmountParam, 0.50f));
     const bool  humanizeBtn = (humanizeAmt > 0.005f) || (load(tuneHumanizeButtonParam, 0.0f) > 0.5f);
-    const bool  polyBtn      = load(tunePolyphonicParam, 0.0f) > 0.5f;
-    const bool  midiCleanBtn = load(tuneMidiCleanParam,  0.0f) > 0.5f;
-    tuneEngine.setHumanizeAmount(humanizeAmt);
-    tuneEngine.setHumanizeEnabled(humanizeBtn);
+    te.setHumanizeAmount(humanizeAmt);
+    te.setHumanizeEnabled(humanizeBtn);
     // Poly mode is clip-based now (Poly::ClipSession); the old real-time poly path stays off.
-    tuneEngine.setPolyphonicEnabled(false);
-    tuneEngine.setMidiCleanModeEnabled(midiCleanBtn);
+    te.setPolyphonicEnabled(false);
+    te.setMidiCleanModeEnabled(load(tuneMidiCleanParam, 0.0f) > 0.5f);
+    te.setCenterAmount(center);
+    te.setVariationAmount(variation);
+    te.setTransitionAmount(transition);
+    te.setSensitivityAmount(sensitivity);
+    te.setVibratoCents(vibrato);
+    te.setVocalRange(juce::roundToInt(load(tuneVocalRangeParam, 0.0f)));
+    te.setNaturalOnly(smoothRequested());
+    te.setScale(scaleMask);
+
+    float extraNoteFormant = 0.0f;
+    PitchTraceQueue::HopOverrideSlot hopSlot {};
+    const auto& ov = pitchQueue.getLiveOverride();
+    if (pitchQueue.getHopOverride(engineHop, hopSlot))
+    {
+        extraNoteFormant = hopSlot.formantSemitones;
+        te.setLiveNoteOverride(true, hopSlot.targetMidi, hopSlot.noteCenter, hopSlot.noteVariation, hopSlot.gainDb,
+                               hopSlot.rampInRatio, hopSlot.sibilantDb, hopSlot.hasCustomPitch, hopSlot.customPitchMidi,
+                               hopSlot.fadeMultiplier, hopSlot.rampOutRatio, hopSlot.pitchEdit);
+    }
+    else if (allowLiveOverride && ov.active.load(std::memory_order_relaxed)) // a playing clip: notes without their own edit stay as they are
+    {
+        extraNoteFormant = ov.formantSemitones.load(std::memory_order_relaxed);
+        te.setLiveNoteOverride(true,
+            ov.targetMidiFloat.load(std::memory_order_relaxed), ov.noteCenter.load(std::memory_order_relaxed),
+            ov.noteVariation.load(std::memory_order_relaxed), ov.gainDb.load(std::memory_order_relaxed),
+            ov.rampInRatio.load(std::memory_order_relaxed), ov.sibilantDb.load(std::memory_order_relaxed),
+            ov.hasCustomPitch.load(std::memory_order_relaxed), ov.customPitchMidi.load(std::memory_order_relaxed),
+            ov.fadeMultiplier.load(std::memory_order_relaxed), ov.rampOutRatio.load(std::memory_order_relaxed));
+    }
+    else
+    {
+        te.setLiveNoteOverride(false, 60.0f, 1.0f, 1.0f, 0.0f, 0.18f);
+    }
+
+    ae.setPitch(load(alterPitchParam, 0.0f));
+    ae.setFormant(juce::jlimit(-12.0f, 12.0f, globalForm + extraNoteFormant));
+    ae.setMix(load(alterMixParam, 1.0f));
+    ae.setSoloWet(load(alterSoloWetParam, 0.0f) > 0.5f);
+    return extraNoteFormant;
+}
+
+bool NovaToneAudioProcessor::renderMonoClipOffline(const juce::AudioBuffer<float>& clip, double clipRate, int hopSamples,
+                                                  juce::AudioBuffer<float>& out, const std::function<bool(float)>& progress)
+{
+    const int chans = juce::jlimit(1, 2, clip.getNumChannels());
+    const int len = clip.getNumSamples();
+    if (len <= 0 || clipRate <= 0.0) return false;
+    constexpr int blockSize = 512;
+    const juce::dsp::ProcessSpec spec { clipRate, (juce::uint32) blockSize, (juce::uint32) chans };
+
+    auto te = std::make_unique<TuneEngine>();
+    auto ae = std::make_unique<AlterEngine>();
+    auto tuneBypass = std::make_unique<ModuleBypass>();
+    auto alterBypass = std::make_unique<ModuleBypass>();
+    te->prepare(spec);
+    te->setLookaheadEnabled(lookaheadRequested());
+    ae->prepare(spec);
+    const bool tuneOff = tuneBypassParam != nullptr && tuneBypassParam->load() > 0.5f;
+    tuneBypass->prepare(spec, te->getLatencySamples(), tuneOff, te->getLatencySamples());
+    alterBypass->prepare(spec, ae->getLatencySamples(), true);
+    const int latency = te->getLatencySamples() + ae->getLatencySamples();
+
+    auto dB = [](const std::atomic<float>* p) { return juce::Decibels::decibelsToGain(p != nullptr ? p->load() : 0.0f); };
+    const float inGain = dB(inputGainParam), outGain = dB(outputGainParam);
+    const float globalForm = alterFormantParam != nullptr ? alterFormantParam->load() : 0.0f;
+    const float alterPitch = alterPitchParam != nullptr ? alterPitchParam->load() : 0.0f;
+    const int hop = juce::jmax(1, hopSamples);
+
+    out.setSize(chans, len);
+    out.clear();
+    juce::AudioBuffer<float> io(chans, blockSize);
+    using Context = juce::dsp::ProcessContextReplacing<float>;
+    int blockIndex = 0;
+    for (int pos = 0; pos < len + latency; pos += blockSize, ++blockIndex)
+    {
+        io.clear();
+        const int avail = juce::jlimit(0, blockSize, len - pos);
+        for (int ch = 0; ch < chans; ++ch)
+            if (avail > 0) io.copyFrom(ch, 0, clip, juce::jmin(ch, clip.getNumChannels() - 1), pos, avail);
+        io.applyGain(inGain);
+
+        // Same as playback: the edit at the playhead (which reads the position after the block)
+        const int engineHop = juce::jmin(PitchTraceQueue::maxTimelineHops - 1, (pos + blockSize) / hop);
+        const float noteForm = configureEngines(*te, *ae, engineHop, false);
+        const bool alterNeeded = std::abs(globalForm + noteForm) > 0.05f || std::abs(alterPitch) > 0.05f;
+
+        juce::dsp::AudioBlock<float> block(io);
+        Context ctx(block);
+        tuneBypass->process(ctx, tuneOff, [&](const Context& c) { te->process(c); }, [&] { te->reset(); });
+        alterBypass->process(ctx, tuneOff || ! alterNeeded, [&](const Context& c) { ae->process(c); }, [&] { ae->reset(); });
+        io.applyGain(outGain);
+
+        // drop the chain's latency so the file lines up with the original
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const int o = pos + i - latency;
+            if (o < 0 || o >= len) continue;
+            for (int ch = 0; ch < chans; ++ch)
+                out.setSample(ch, o, io.getSample(ch, i));
+        }
+        if (progress && blockIndex % 64 == 0 && ! progress((float) pos / (float) (len + latency)))
+            return false;
+    }
+    return true;
+}
+
+void NovaToneAudioProcessor::pushParametersToEngines() noexcept
+{
+    auto load = [](const std::atomic<float>* p, float fallback) noexcept {
+        return p != nullptr ? p->load(std::memory_order_relaxed) : fallback;
+    };
+
+    // The roll's copy of the knobs
+    const float humanizeAmt = juce::jlimit(0.0f, 1.0f, load(tuneHumanizeAmountParam, 0.50f));
     pitchQueue.globalHumanizeAmount.store(humanizeAmt, std::memory_order_relaxed);
-    pitchQueue.globalHumanize.store(humanizeBtn,       std::memory_order_relaxed);
-    pitchQueue.globalPolyphonic.store(polyBtn,         std::memory_order_relaxed);
-    pitchQueue.globalMidiCleanMode.store(midiCleanBtn, std::memory_order_relaxed);
-    tuneEngine.setCenterAmount(center);
-    tuneEngine.setVariationAmount(variation);
-    tuneEngine.setTransitionAmount(transition);
-    tuneEngine.setSensitivityAmount(sensitivity);
-    tuneEngine.setVibratoCents(vibrato);
-    const int vocalRangeIdx = juce::roundToInt(load(tuneVocalRangeParam, 0.0f));
-    tuneEngine.setVocalRange(vocalRangeIdx);
-    pitchQueue.vocalRangeMode.store(vocalRangeIdx, std::memory_order_relaxed);
+    pitchQueue.globalHumanize.store((humanizeAmt > 0.005f) || (load(tuneHumanizeButtonParam, 0.0f) > 0.5f), std::memory_order_relaxed);
+    pitchQueue.globalPolyphonic.store(load(tunePolyphonicParam, 0.0f) > 0.5f, std::memory_order_relaxed);
+    pitchQueue.globalMidiCleanMode.store(load(tuneMidiCleanParam, 0.0f) > 0.5f, std::memory_order_relaxed);
+    pitchQueue.vocalRangeMode.store(juce::roundToInt(load(tuneVocalRangeParam, 0.0f)), std::memory_order_relaxed);
+    pitchQueue.globalCenter.store(load(tuneCenterParam, 0.85f), std::memory_order_relaxed);
+    pitchQueue.globalVariation.store(load(tuneVariationParam, 1.0f), std::memory_order_relaxed);
+    pitchQueue.globalTransition.store(load(tuneTransitionParam, load(tuneFlexAmountParam, 0.65f)), std::memory_order_relaxed);
+    pitchQueue.globalSensitivity.store(load(tuneSensitivityParam, 0.65f), std::memory_order_relaxed);
+    pitchQueue.globalFormant.store(load(alterFormantParam, 0.0f), std::memory_order_relaxed);
+    pitchQueue.activeScaleMask.store(packScaleDegreeMask(), std::memory_order_relaxed);
 
-    pitchQueue.globalCenter.store(center, std::memory_order_relaxed);
-    pitchQueue.globalVariation.store(variation, std::memory_order_relaxed);
-    pitchQueue.globalTransition.store(transition, std::memory_order_relaxed);
-    pitchQueue.globalSensitivity.store(sensitivity, std::memory_order_relaxed);
-    pitchQueue.globalFormant.store(globalForm, std::memory_order_relaxed);
-    pitchQueue.activeScaleMask.store(scaleMask, std::memory_order_relaxed);
-
-    tuneEngine.setNaturalOnly(smoothRequested());
     const bool lookahead = lookaheadRequested();
     if (lookahead != tuneEngine.isLookaheadEnabled())
     {
         tuneEngine.setLookaheadEnabled(lookahead);
         bypass[tuneModule].setLatency(tuneEngine.getLatencySamples());
     }
-    tuneEngine.setScale(scaleMask);
 
-    float extraNoteFormant = 0.0f;
     const int playHop = pitchQueue.currentPlayheadHop.load(std::memory_order_relaxed);
     const int engineHop = (playHop > 0) ? playHop : (tuneEngine.getCurrentHopIndex() % PitchTraceQueue::maxTimelineHops);
-    PitchTraceQueue::HopOverrideSlot hopSlot {};
-
-    const auto& ov = pitchQueue.getLiveOverride();
-    const bool ovActive = ov.active.load(std::memory_order_relaxed);
-    if (pitchQueue.getHopOverride(engineHop, hopSlot))
-    {
-        extraNoteFormant = hopSlot.formantSemitones;
-        tuneEngine.setLiveNoteOverride(
-            true,
-            hopSlot.targetMidi,
-            hopSlot.noteCenter,
-            hopSlot.noteVariation,
-            hopSlot.gainDb,
-            hopSlot.rampInRatio,
-            hopSlot.sibilantDb,
-            hopSlot.hasCustomPitch,
-            hopSlot.customPitchMidi,
-            hopSlot.fadeMultiplier,
-            hopSlot.rampOutRatio,
-            hopSlot.pitchEdit);
-    }
-    else if (ovActive && playHop <= 0) // a playing clip: notes without their own edit stay as they are
-    {
-        extraNoteFormant = ov.formantSemitones.load(std::memory_order_relaxed);
-        tuneEngine.setLiveNoteOverride(
-            true,
-            ov.targetMidiFloat.load(std::memory_order_relaxed),
-            ov.noteCenter.load(std::memory_order_relaxed),
-            ov.noteVariation.load(std::memory_order_relaxed),
-            ov.gainDb.load(std::memory_order_relaxed),
-            ov.rampInRatio.load(std::memory_order_relaxed),
-            ov.sibilantDb.load(std::memory_order_relaxed),
-            ov.hasCustomPitch.load(std::memory_order_relaxed),
-            ov.customPitchMidi.load(std::memory_order_relaxed),
-            ov.fadeMultiplier.load(std::memory_order_relaxed),
-            ov.rampOutRatio.load(std::memory_order_relaxed));
-    }
-    else
-    {
-        tuneEngine.setLiveNoteOverride(false, 60.0f, 1.0f, 1.0f, 0.0f, 0.18f);
-    }
+    configureEngines(tuneEngine, alterEngine, engineHop, playHop <= 0);
 
     for (int v = 0; v < PitchTraceQueue::maxPolyVoices; ++v)
     {
         const auto& pov = pitchQueue.getPolyVoiceOverride(v);
-        const bool pAct = pov.active.load(std::memory_order_relaxed);
-        tuneEngine.setPolyVoiceOverride(
-            v,
-            pAct,
-            pov.detectedMidiRef.load(std::memory_order_relaxed),
-            pov.targetMidiFloat.load(std::memory_order_relaxed),
-            pov.noteCenter.load(std::memory_order_relaxed),
-            pov.noteVariation.load(std::memory_order_relaxed),
+        tuneEngine.setPolyVoiceOverride(v, pov.active.load(std::memory_order_relaxed),
+            pov.detectedMidiRef.load(std::memory_order_relaxed), pov.targetMidiFloat.load(std::memory_order_relaxed),
+            pov.noteCenter.load(std::memory_order_relaxed), pov.noteVariation.load(std::memory_order_relaxed),
             pov.gainDb.load(std::memory_order_relaxed));
     }
-
-    const float totalPitchShift   = load(alterPitchParam, 0.0f);
-    const float totalFormantShift = juce::jlimit(-12.0f, 12.0f, globalForm + extraNoteFormant);
-    alterEngine.setPitch(totalPitchShift);
-    alterEngine.setFormant(totalFormantShift);
-    alterEngine.setMix(load(alterMixParam, 1.0f));
-    alterEngine.setSoloWet(load(alterSoloWetParam, 0.0f) > 0.5f);
 
     inputGain.setGainDecibels(load(inputGainParam, 0.0f));
     outputGain.setGainDecibels(load(outputGainParam, 0.0f));

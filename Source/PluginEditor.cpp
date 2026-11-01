@@ -447,6 +447,9 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
     };
     masterBar.setCentreComponent(&workstationView.getTunerComponent());
     workstationView.setClipSession(&p.getPolyClip());
+    workstationView.setOfflineRenderer([&p](const juce::AudioBuffer<float>& clip, double rate, int hop, juce::AudioBuffer<float>& out,
+                                            const std::function<bool(float)>& progress)
+                                       { return p.renderMonoClipOffline(clip, rate, hop, out, progress); });
 
     // Harmony tab, "MIDI file" chords
     auto& lane = harmonyView.getChordLane();

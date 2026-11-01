@@ -90,6 +90,8 @@ bool PitchTraceComponent::restoreMonoRoll()
 
 PitchTraceComponent::~PitchTraceComponent()
 {
+    exportCancel.store(true);
+    if (exportThread.joinable()) exportThread.join();
     stashMonoRoll();
     stopTimer();
     if (clipSession != nullptr)
@@ -2069,6 +2071,7 @@ void PitchTraceComponent::timerCallback()
     queue.popAll(popScratch);
 
     bool needsRepaint = animateNoteCentres();   // notes glide onto their centre when Center / edits pull them
+    if (exportProgress.load() >= 0.0f) needsRepaint = true;   // export progress bar
 
     if (isClipMode())
     {
@@ -3057,8 +3060,10 @@ void PitchTraceComponent::paint(juce::Graphics& g)
         // Poly: analysing, or analysed but the first render (what you hear) isn't ready yet
         const bool polyLoading = isClipMode() && (clipSession->getStatus() == Poly::ClipSession::Status::analysing
                                  || (clipSession->getStatus() == Poly::ClipSession::Status::ready && ! clipSession->hasRender()));
-        if (loadingSample || polyLoading)
+        const float exporting = exportProgress.load();
+        if (loadingSample || polyLoading || exporting >= 0.0f)
         {
+            const bool withBar = polyLoading || exporting >= 0.0f;
             g.setColour(graphBackground.withAlpha(0.82f));
             g.fillRect(outer);
             const auto box = juce::Rectangle<float>(260.0f, 76.0f).withCentre(outer.getCentre());
@@ -3068,12 +3073,12 @@ void PitchTraceComponent::paint(juce::Graphics& g)
             g.drawRoundedRectangle(box, 8.0f, 1.0f);
             g.setColour(textPrimary);
             g.setFont(HarmonyEngineUI::font(14.0f, true));
-            g.drawText("Loading sample...", polyLoading ? box.withTrimmedBottom(34.0f) : box,
-                       polyLoading ? juce::Justification::centredBottom : juce::Justification::centred);
-            // Poly analyses in the background and reports progress; Mono loads in one blocking step (no bar).
-            if (polyLoading)
+            g.drawText(exporting >= 0.0f ? "Exporting WAV..." : "Loading sample...", withBar ? box.withTrimmedBottom(34.0f) : box,
+                       withBar ? juce::Justification::centredBottom : juce::Justification::centred);
+            // Poly analyses / the export renders in the background and report progress; Mono loads in one blocking step (no bar).
+            if (withBar)
             {
-            const float p = juce::jlimit(0.0f, 1.0f, clipSession->getProgress());
+            const float p = juce::jlimit(0.0f, 1.0f, exporting >= 0.0f ? exporting : clipSession->getProgress());
             const auto bar = juce::Rectangle<float>(box.getWidth() - 40.0f, 6.0f).withCentre({ box.getCentreX(), box.getBottom() - 22.0f });
             g.setColour(textPrimary.withAlpha(0.12f));
             g.fillRoundedRectangle(bar, 3.0f);
@@ -4421,61 +4426,54 @@ void PitchTraceComponent::promptExportWavFile()
 
             if (safeThis->loadedAudioClip.getNumSamples() > 0)
             {
-                // Constant-tempo dual-head crossfaded splice grain resynthesis anchored to sample index `i`:
-                double grainPhase = 0.0;
-                const double grainWindow = std::clamp(sr * 0.022, 256.0, 2048.0);
-                for (int i = 0; i < totalSamples; ++i)
+                // Render through the plugin's own Tune/Alter chain (what you hear on playback), in the background.
+                // (It used to resynthesise with a separate two-tap splice shifter: phasey, with its own artifacts.)
+                auto* self = safeThis.getComponent();
+                if (self->offlineRender == nullptr || self->exportThread.joinable())
                 {
-                    const int h = juce::jlimit(0, numHops - 1, i / hopSize);
-                    const auto& th = safeThis->timeline[(size_t)h];
-                    float ratio = 1.0f;
-                    float gainLin = 1.0f;
-
-                    if (th.data.isVoiced && th.rawMidi > 0.0f)
-                    {
-                        const float shapedM = safeThis->evaluateShapedMidiAtHop(h, gCenter, gVar, gTrans);
-                        ratio = std::exp2(juce::jlimit(-12.0f, 12.0f, shapedM - th.rawMidi) / 12.0f);
-                    }
-                    if (const auto* nb = safeThis->findNoteById(th.noteId))
-                    {
-                        gainLin = juce::Decibels::decibelsToGain(nb->gainDb);
-                        const float span = static_cast<float>(juce::jmax(1, nb->endHop - nb->startHop));
-                        const float u = (static_cast<float>(h - nb->startHop) + 0.5f) / span;
-                        if (nb->fadeInRatio > 0.005f && u < nb->fadeInRatio)
-                            gainLin *= 0.5f - 0.5f * std::cos(juce::MathConstants<float>::pi * (u / nb->fadeInRatio));
-                        if (nb->fadeOutRatio > 0.005f && (1.0f - u) < nb->fadeOutRatio)
-                            gainLin *= 0.5f - 0.5f * std::cos(juce::MathConstants<float>::pi * ((1.0f - u) / nb->fadeOutRatio));
-                    }
-
-                    const double dDot = 1.0 - static_cast<double>(ratio);
-                    grainPhase += dDot / grainWindow;
-                    grainPhase -= std::floor(grainPhase);
-                    double grainPhase2 = grainPhase + 0.5;
-                    grainPhase2 -= std::floor(grainPhase2);
-
-                    const double d1 = grainPhase * grainWindow;
-                    const double d2 = grainPhase2 * grainWindow;
-                    const float s1 = std::sin(juce::MathConstants<float>::pi * static_cast<float>(grainPhase));
-                    const float s2 = std::sin(juce::MathConstants<float>::pi * static_cast<float>(grainPhase2));
-                    const float w1 = s1 * s1;
-                    const float w2 = s2 * s2;
-
-                    auto sampleAt = [&](int ch, double pos) noexcept {
-                        const double clamped = juce::jlimit(0.0, static_cast<double>(totalSamples - 1), pos);
-                        const int r0 = static_cast<int>(clamped);
-                        const int r1 = juce::jmin(totalSamples - 1, r0 + 1);
-                        const float frac = static_cast<float>(clamped - std::floor(clamped));
-                        return (1.0f - frac) * safeThis->loadedAudioClip.getSample(ch, r0)
-                             + frac * safeThis->loadedAudioClip.getSample(ch, r1);
-                    };
-
-                    for (int ch = 0; ch < numCh; ++ch)
-                    {
-                        const float s = w1 * sampleAt(ch, static_cast<double>(i) - d1)
-                                      + w2 * sampleAt(ch, static_cast<double>(i) - d2);
-                        renderBuf.setSample(ch, i, s * gainLin);
-                    }
+                    self->currentCoachHint = self->exportThread.joinable() ? "Already exporting..." : "Export isn't available here.";
+                    self->repaint();
+                    return;
                 }
+                auto clip = std::make_shared<juce::AudioBuffer<float>>(self->loadedAudioClip);
+                const int hop = juce::jmax(1, hopSize);
+                auto render = self->offlineRender;
+                self->exportCancel.store(false);
+                self->exportProgress.store(0.0f);
+                self->repaint();
+                self->exportThread = std::thread([self, safe = safeThis, clip, sr, hop, render, outFile]
+                {
+                    juce::AudioBuffer<float> out;
+                    const bool ok = render(*clip, sr, hop, out, [self](float p)
+                    {
+                        self->exportProgress.store(juce::jlimit(0.0f, 0.999f, p));
+                        return ! self->exportCancel.load();
+                    });
+                    bool written = false;
+                    if (ok)
+                    {
+                        outFile.deleteFile();
+                        if (auto fileStream = std::unique_ptr<juce::FileOutputStream>(outFile.createOutputStream()))
+                        {
+                            juce::WavAudioFormat wavFormat;
+                            if (std::unique_ptr<juce::AudioFormatWriter> writer {
+                                    wavFormat.createWriterFor(fileStream.get(), sr, (unsigned int) out.getNumChannels(), 24, {}, 0) })
+                            {
+                                fileStream.release();
+                                written = writer->writeFromAudioSampleBuffer(out, 0, out.getNumSamples());
+                            }
+                        }
+                    }
+                    juce::MessageManager::callAsync([safe, written, name = outFile.getFileName()]
+                    {
+                        if (safe == nullptr) return;
+                        if (safe->exportThread.joinable()) safe->exportThread.join();
+                        safe->exportProgress.store(-1.0f);
+                        safe->currentCoachHint = written ? "Exported " + name : juce::String("Export failed.");
+                        safe->repaint();
+                    });
+                });
+                return;
             }
             else
             {

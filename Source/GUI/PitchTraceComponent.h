@@ -1,6 +1,7 @@
 #pragma once
 
 #include <unordered_map>
+#include <thread>
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -66,6 +67,11 @@ public:
     /** Independent: preview ignores the DAW transport/position (plays only from Play / Stop). */
     void setIndependentPlay(bool independent);
     bool isPreviewPlaying() const;
+
+    /** Renders the Mono clip through the plugin's own playback chain (set by the editor; see
+        NovaToneAudioProcessor::renderMonoClipOffline). Export WAV uses it so the file sounds like playback. */
+    std::function<bool(const juce::AudioBuffer<float>&, double, int, juce::AudioBuffer<float>&, const std::function<bool(float)>&)> offlineRender;
+    bool isExporting() const noexcept { return exportProgress.load() >= 0.0f; }
     /** Mono clip's notes on the song timeline (PPQ at `bpm`), for lining up a chord file; empty without a clip. */
     std::vector<MidiChordTrack::LeadNote> leadNotesForAlignment(double bpm) const;
     float getViewStartHop() const noexcept { return viewStartHop; }   // tests
@@ -338,6 +344,9 @@ private:
     int  clipPlayHop  = -1;
     int  lastFilePlayHop = -1;
     int  lastMonoTakeState = 0;
+    std::thread exportThread;
+    std::atomic<bool>  exportCancel { false };
+    std::atomic<float> exportProgress { -1.0f };   // -1 = not exporting
     struct MonoRollState;
     void stashMonoRoll();      // Mono roll -> queue.monoRollState
     bool restoreMonoRoll();    // queue.monoRollState -> roll (false if there's nothing)

@@ -603,6 +603,92 @@ int main(int argc, char** argv)
         }
     }
 
+    if (argc > 8 && juce::String(argv[8]) == "export")
+    {
+        for (auto kv : juce::StringArray::fromTokens(juce::SystemStats::getEnvironmentVariable("TEST_PARAMS", ""), ",", ""))
+            if (auto* prm = np->apvts.getParameter(kv.upToFirstOccurrenceOf("=", false, false)))
+                prm->setValueNotifyingHost(prm->convertTo0to1(kv.fromFirstOccurrenceOf("=", false, false).getFloatValue()));
+        std::unique_ptr<juce::AudioProcessorEditor> med(proc->createEditor());
+        med->setSize(w, h); med->setVisible(true);
+        auto* roll = findRoll(*med);
+        auto& q = np->getPitchTraceQueue();
+        const double sr = 48000.0; const int N = (int) (8 * sr);
+        juce::AudioBuffer<float> voc(1, N); double vph = 0;
+        const double freqs[] = { 216.0, 250.5, 258.4, 297.2 };
+        for (int i = 0; i < N; ++i)
+        {
+            const double t = i / sr; const int k = (int) (t / 2.0) % 4; const double ph2 = std::fmod(t, 2.0);
+            float smp = 0.0f;
+            if (ph2 < 1.6)
+            {
+                vph += 2 * 3.14159265 * freqs[k] * std::pow(2.0, 0.25 * std::sin(t * 2 * 3.14159 * 5.5) / 12.0) / sr;
+                const double env = juce::jmin(1.0, ph2 / 0.05) * juce::jmin(1.0, (1.6 - ph2) / 0.05);
+                double hs = 0; for (int hN = 1; hN <= 14; ++hN) hs += std::sin(hN * vph) / (hN * (hN > 2 ? 1.6 : 1.0));
+                smp = (float) (0.2 * env * hs);
+            }
+            voc.setSample(0, i, smp);
+        }
+        const auto wav = outDir.getChildFile("exportvocal.wav"); wav.deleteFile();
+        { std::unique_ptr<juce::AudioFormatWriter> wr(juce::WavAudioFormat().createWriterFor(new juce::FileOutputStream(wav), sr, 1, 24, {}, 0)); wr->writeFromAudioSampleBuffer(voc, 0, N); }
+        roll->filesDropped(juce::StringArray(wav.getFullPathName()), 0, 0);
+        pump(400);
+        roll->selectAdjacentNote(1); roll->transposeSelectedNote(2); pump(200);
+
+        // Playback through the plugin (NovaTone's own transport, silent input)
+        for (int b = 0; b < 8; ++b) { buf.clear(); proc->processBlock(buf, midi); }
+        roll->seekClipToStart(); roll->setPreviewPlaying(true);
+        const int lat = proc->getLatencySamples();
+        juce::AudioBuffer<float> play(1, N + lat + 4096); int w0 = 0;
+        while (w0 + 512 <= play.getNumSamples()) { buf.clear(); playHead.playing = false; proc->processBlock(buf, midi); play.copyFrom(0, w0, buf, 0, 0, 512); w0 += 512; }
+        roll->setPreviewPlaying(false);
+
+        // Export (same call the File menu makes)
+        juce::AudioBuffer<float> ex;
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        const bool ok = np->renderMonoClipOffline(voc, sr, q.monoPreview.hopSamples, ex, [](float) { return true; });
+        const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+
+        double sig = 0, err = 0, errDry = 0;
+        for (int i = 0; i < N; ++i)
+        {
+            const float y = play.getSample(0, i + lat), e = ex.getSample(0, i), x = voc.getSample(0, i);
+            sig += y * y; err += (e - y) * (e - y); errDry += (x - y) * (x - y);
+        }
+        // Perceptual comparison: log-spectral distance (dB, 2048-pt frames) and pitch (zero crossings, 40 ms)
+        auto lsd = [&](const juce::AudioBuffer<float>& A, int offA, const juce::AudioBuffer<float>& Bf, int offB)
+        {
+            juce::dsp::FFT fft(11); std::vector<float> fa(4096), fb(4096); double tot = 0; int frames = 0;
+            for (int st = 0; st + 2048 < N; st += 1024)
+            {
+                double ea = 0; for (int i = 0; i < 2048; ++i) ea += std::pow(A.getSample(0, st + i + offA), 2.0f);
+                if (ea < 2048 * 1e-4) continue;   // voiced/loud frames only
+                std::fill(fa.begin(), fa.end(), 0.0f); std::fill(fb.begin(), fb.end(), 0.0f);
+                for (int i = 0; i < 2048; ++i) { const float wv = 0.5f - 0.5f * std::cos(6.2831853f * i / 2047.0f); fa[(size_t) i] = A.getSample(0, st + i + offA) * wv; fb[(size_t) i] = Bf.getSample(0, st + i + offB) * wv; }
+                fft.performFrequencyOnlyForwardTransform(fa.data()); fft.performFrequencyOnlyForwardTransform(fb.data());
+                double d = 0; int nb = 0;
+                for (int k = 4; k < 700; ++k) { const double x = 20 * std::log10(fa[(size_t) k] + 1e-4), y = 20 * std::log10(fb[(size_t) k] + 1e-4); d += (x - y) * (x - y); ++nb; }
+                tot += std::sqrt(d / nb); ++frames;
+            }
+            return tot / juce::jmax(1, frames);
+        };
+        auto pitchDiff = [&](const juce::AudioBuffer<float>& A, int offA, const juce::AudioBuffer<float>& Bf, int offB)
+        {
+            const int win = 4800; double sum = 0; int nw = 0;
+            auto zc = [&](const juce::AudioBuffer<float>& X, int from) { int z = 0; for (int i = from + 1; i < from + win; ++i) if ((X.getSample(0, i) >= 0) != (X.getSample(0, i - 1) >= 0)) ++z; return z; };
+            for (int k = 0; k < 4; ++k)
+                for (int i = (int) ((k * 2.0 + 0.2) * sr); i + win < (int) ((k * 2.0 + 1.4) * sr); i += win)
+                { const double fa = zc(A, i + offA), fb = zc(Bf, i + offB); if (fa > 0 && fb > 0) { sum += std::abs(1200.0 * std::log2(fa / fb)); ++nw; } }
+            return sum / juce::jmax(1, nw);
+        };
+        std::cout << "spectral distance export vs playback: " << juce::String(lsd(ex, 0, play, lat), 2) << " dB   (original vs playback: " << juce::String(lsd(voc, 0, play, lat), 2) << " dB)\n";
+        std::cout << "pitch difference export vs playback: " << juce::String(pitchDiff(ex, 0, play, lat), 1) << " c   (original vs playback: " << juce::String(pitchDiff(voc, 0, play, lat), 1) << " c)\n";
+        std::cout << "export ok=" << ok << " in " << juce::String(ms, 0) << " ms (8 s of audio), latency " << lat << "\n";
+        std::cout << "export vs playback: " << juce::String(10 * std::log10(err / sig), 1) << " dB difference\n";
+        std::cout << "(original vs playback, for scale: " << juce::String(10 * std::log10(errDry / sig), 1) << " dB)\n";
+        { std::unique_ptr<juce::AudioFormatWriter> wr(juce::WavAudioFormat().createWriterFor(new juce::FileOutputStream(outDir.getChildFile("exported.wav")), sr, 1, 24, {}, 0)); wr->writeFromAudioSampleBuffer(ex, 0, N); }
+        med.reset(); proc->releaseResources(); return 0;
+    }
+
     if (argc > 8 && juce::String(argv[8]) == "harmmidi")
     {
         // Chord file: C | Am | F | G (one bar each, 4/4, 480 tpq), twice
