@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <juce_events/juce_events.h>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -221,7 +222,7 @@ public:
     // or multi-note edits) to apply its own pitch, formant, variation, gain,
     // sibilant trim, and curved fade envelope during timeline playback/streaming!
     //==============================================================================
-    static constexpr int maxTimelineHops = 4096;
+    static constexpr int maxTimelineHops = 65536;   // ~11 min at 48 kHz / ~12 min at 44.1 kHz (file hop = 512 samples)
 
     struct HopOverrideSlot
     {
@@ -298,17 +299,17 @@ public:
     }
 
     // Global macro snapshot for the GUI curve renderer (written by audio/processor, read by GUI):
-    std::atomic<float> globalCenter      { 0.85f };
+    std::atomic<float> globalCenter      { 0.0f };   // dry defaults (match the parameters)
     std::atomic<float> globalVariation   { 1.00f };
     std::atomic<float> globalTransition  { 0.65f };
     std::atomic<float> globalSensitivity { 0.65f };
     std::atomic<float> globalFormant     { 0.0f };
     std::atomic<bool>  globalHumanize       { false };
-    std::atomic<float> globalHumanizeAmount { 0.50f }; ///< Continuous Humanize slider [0..1]: 0.50 (50%) = Standard ON, 1.00 (100%) = Extreme Humanize
+    std::atomic<float> globalHumanizeAmount { 0.0f }; ///< Continuous Humanize slider [0..1]: 0.50 (50%) = Standard ON, 1.00 (100%) = Extreme Humanize
     std::atomic<bool>  globalPolyphonic    { false }; ///< False = Mono (NewTone), True = Polyphonic (Melodyne Chord/Choir/Strings)
     std::atomic<bool>  globalMidiCleanMode { false }; ///< True = Instrument MIDI Clean & Denoise Mode
     std::atomic<uint16_t> activeScaleMask { 0x0AB5 }; // C Major default
-    std::atomic<bool>  snapToScale       { true };
+    std::atomic<bool>  snapToScale       { false };
     std::atomic<double> hostBpm          { 120.0 }; ///< Latest host tempo (clip-mode DAW grid).
     std::atomic<bool>   hostPlaying      { false }; ///< DAW transport running (live Mono roll only grows while it plays or there's sound).
     std::atomic<bool>  autoScroll        { true };
@@ -350,28 +351,88 @@ public:
     /** Mono take: the input audio recorded while the DAW plays (automatic when nothing is loaded,
         or after Rec). When it ends (DAW stops / loops / Stop) the GUI turns it into the Mono clip,
         so Play / Stop / Back-to-start work on it like in Poly. Audio thread writes; GUI reads only in `done`. */
-    struct MonoTake
+    struct MonoTake : private juce::Timer
     {
         enum State : int { idle = 0, armed = 1, capturing = 2, done = 3 };
-        static constexpr double maxSeconds = 45.0;   // same cap as a dropped file
+        static constexpr int maxChunks = 600;        // 1-second chunks: 10 minutes (same as a loaded file)
 
         std::atomic<int>  state { idle };
         std::atomic<bool> stopRequested { false };
-        std::atomic<int>  length { 0 };
+        std::atomic<int>  length { 0 };              // frames
         std::atomic<juce::int64> songStart { -1 };   // host sample of take sample 0, -1 = not tied to the song
-        juce::AudioBuffer<float> audio;              // pre-allocated in prepare (2 ch)
         double rate = 48000.0;
+        int    chunkLen = 48000;                     // frames per chunk (interleaved stereo)
 
         // audio thread only
         juce::int64 nextHostSample = -1;
         float peak = 0.0f;
 
+        ~MonoTake() override { stopTimer(); }
+
+        /** Message thread. Keeps ~20 s allocated ahead; grows while a take records (audio thread never allocates). */
         void prepare (double sampleRate)
         {
+            stopTimer();
             state.store (idle);
             length.store (0);
             rate = sampleRate;
-            audio.setSize (2, static_cast<int> (sampleRate * maxSeconds) + 1, false, true, false);
+            for (auto& c : chunks) c.store (nullptr);
+            storage.clear();
+            chunkLen = juce::jmax (1, juce::roundToInt (sampleRate));
+            ensureChunks (20);
+            startTimerHz (4);
+        }
+
+        /** Audio thread: appends frames; returns how many fit (fewer = out of room). */
+        int append (const juce::AudioBuffer<float>& in, int numFrames) noexcept
+        {
+            const int chans = in.getNumChannels();
+            int len = length.load (std::memory_order_relaxed);
+            int written = 0;
+            for (; written < numFrames; ++written, ++len)
+            {
+                const int c = len / chunkLen;
+                if (c >= maxChunks) break;
+                float* p = chunks[(size_t) c].load (std::memory_order_acquire);
+                if (p == nullptr) break;
+                const int off = (len % chunkLen) * 2;
+                p[off]     = in.getSample (0, written);
+                p[off + 1] = in.getSample (chans > 1 ? 1 : 0, written);
+            }
+            length.store (len, std::memory_order_release);
+            return written;
+        }
+
+        /** GUI thread, only in `done`: copies the take out. */
+        void copyTo (juce::AudioBuffer<float>& out) const
+        {
+            const int len = length.load (std::memory_order_acquire);
+            out.setSize (2, len);
+            for (int i = 0; i < len; ++i)
+            {
+                const float* p = chunks[(size_t) (i / chunkLen)].load (std::memory_order_acquire);
+                const int off = (i % chunkLen) * 2;
+                out.setSample (0, i, p != nullptr ? p[off] : 0.0f);
+                out.setSample (1, i, p != nullptr ? p[off + 1] : 0.0f);
+            }
+        }
+
+    private:
+        std::array<std::atomic<float*>, maxChunks> chunks {};
+        std::vector<std::unique_ptr<float[]>> storage;   // message thread owns the memory
+
+        void ensureChunks (int count)
+        {
+            count = juce::jmin (count, maxChunks);
+            while (static_cast<int> (storage.size()) < count)
+            {
+                storage.push_back (std::make_unique<float[]> ((size_t) chunkLen * 2));
+                chunks[storage.size() - 1].store (storage.back().get(), std::memory_order_release);
+            }
+        }
+        void timerCallback() override
+        {
+            ensureChunks (length.load (std::memory_order_relaxed) / chunkLen + 20);
         }
     };
     MonoTake monoTake;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <unordered_map>
+
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_events/juce_events.h>
@@ -276,7 +278,8 @@ private:
     std::vector<EditSnapshot> redoStack;
     int nextNoteId = 1;
 
-    static constexpr int   maxTimelineHops  = 4096; // ~45 seconds at 11 ms hop
+    static constexpr double maxLoadSeconds = 600.0;  // longest file Mono loads (10 min); must fit maxTimelineHops
+    static constexpr int   maxTimelineHops  = PitchTraceQueue::maxTimelineHops; // ~11 min of a loaded file (512-sample hops at 48 kHz)
     static constexpr size_t maxUndoSteps    = 32;
     static constexpr float pianoRulerWidth  = 48.0f;
     static constexpr float timeRulerHeight  = 24.0f;
@@ -332,6 +335,12 @@ private:
     int  clipPlayHop  = -1;
     int  lastFilePlayHop = -1;
     int  lastMonoTakeState = 0;
+    /** Pitch a note is heard at (Mono: sung centre pulled toward its target by Center; pitch-edited notes land
+        on target; Poly: target + cents). Note blocks are drawn there, so off-centre notes sit off the line. */
+    float heardCentreMidi(const NewtoneNoteBlock& n) const noexcept;
+    float displayedCentreMidi(const NewtoneNoteBlock& n) const noexcept;
+    std::unordered_map<int, float> shownCentre;   // note id -> animated drawn centre (eases toward heardCentreMidi)
+    bool animateNoteCentres();                     // timer: true while something is still moving
     bool lastClipHadRender = false;
     void adoptMonoTake();          // finished take -> Mono clip (analysed like a dropped file)
     bool loadingSample = false;   // Mono file load in progress (loading screen)

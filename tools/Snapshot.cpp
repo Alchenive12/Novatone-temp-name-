@@ -602,6 +602,44 @@ int main(int argc, char** argv)
         }
     }
 
+    if (argc > 8 && juce::String(argv[8]) == "centre")
+    {
+        std::unique_ptr<juce::AudioProcessorEditor> med(proc->createEditor());
+        med->setSize(w, h); med->setVisible(true);
+        auto* roll = findRoll(*med);
+        pump(300);
+        const double sr = 48000.0; const int N = (int) (8 * sr);
+        juce::AudioBuffer<float> voc(1, N); double vph = 0;
+        const double freqs[] = { 216.0, 250.5, 258.4, 297.2 };   // A3 -31c, B3 +23c, C4 -22c, D4 +20c
+        for (int i = 0; i < N; ++i)
+        {
+            const double t = i / sr; const int k = (int) (t / 2.0) % 4; const double ph2 = std::fmod(t, 2.0);
+            float smp = 0.0f;
+            if (ph2 < 1.6)
+            {
+                vph += 2 * 3.14159265 * freqs[k] * std::pow(2.0, 0.15 * std::sin(t * 2 * 3.14159 * 5.5) / 12.0) / sr;
+                const double env = juce::jmin(1.0, ph2 / 0.05) * juce::jmin(1.0, (1.6 - ph2) / 0.05);
+                double hs = 0; for (int hN = 1; hN <= 12; ++hN) hs += std::sin(hN * vph) / (hN * (hN > 2 ? 1.6 : 1.0));
+                smp = (float) (0.2 * env * hs);
+            }
+            voc.setSample(0, i, smp);
+        }
+        const auto wav = outDir.getChildFile("centrevocal.wav"); wav.deleteFile();
+        { std::unique_ptr<juce::AudioFormatWriter> wr(juce::WavAudioFormat().createWriterFor(new juce::FileOutputStream(wav), sr, 1, 24, {}, 0)); wr->writeFromAudioSampleBuffer(voc, 0, N); }
+        roll->filesDropped(juce::StringArray(wav.getFullPathName()), 0, 0);
+        pump(600);
+        for (const auto& n : roll->getNotesForTests())
+            if (! n.isSibilant) std::cout << "note " << n.id << " detected " << juce::String(n.detectedMidi, 3) << " target " << n.targetMidi << "\n";
+        save(*med, outDir.getChildFile("centre_0.png"), 1.0f);
+        if (auto* p = np->apvts.getParameter("tune_center")) p->setValueNotifyingHost(1.0f);
+        for (int b = 0; b < 4; ++b) { buf.clear(); proc->processBlock(buf, midi); }   // publishes the knob to the roll
+        pump(90);
+        save(*med, outDir.getChildFile("centre_moving.png"), 1.0f);
+        pump(1200);
+        save(*med, outDir.getChildFile("centre_100.png"), 1.0f);
+        med.reset(); proc->releaseResources(); return 0;
+    }
+
     if (argc > 8 && juce::String(argv[8]) == "level")
     {
         // Loud / quiet notes; press Level; per-note output level + pitch (zero crossings) before and after.
@@ -751,8 +789,14 @@ int main(int argc, char** argv)
             while (! roll->hasPreviewClip() && juce::Time::getMillisecondCounter() - tLoad < 120000) pump(50);
             std::cout << "poly ready after " << (juce::Time::getMillisecondCounter() - tLoad) << " ms, render current=" << clip.isRenderCurrent() << "\n";
         }
-        std::cout << "loaded: hasClip=" << roll->hasPreviewClip() << "\n";
+        { const auto tp = juce::Time::getMillisecondCounterHiRes(); for (int r = 0; r < 10; ++r) { auto im = med->createComponentSnapshot(med->getLocalBounds(), true, 1.0f); } std::cout << "paint: " << (juce::Time::getMillisecondCounterHiRes() - tp) / 10.0 << " ms/frame\n"; }
+        std::cout << "loaded: hasClip=" << roll->hasPreviewClip() << " in " << (juce::Time::getMillisecondCounter() - tLoad) << " ms, roll hops=" << roll->getTimelineSize() << "\n";
         roll->setPreviewPlaying(true);
+        if (const double seek = juce::SystemStats::getEnvironmentVariable("TEST_SEEK", "0").getDoubleValue(); seek > 0)
+        {
+            if (polyLoad) np->getPolyClip().seekPreview((juce::int64) (seek * 48000));
+            else q.monoPreview.pos.store(seek * sr);
+        }
         // Play 14 s on the plugin's own transport; report sung-part output level per 2 s phrase
         const int phrases = juce::SystemStats::getEnvironmentVariable("TEST_PHRASES", "7").getIntValue();
         for (int k = 0; k < phrases; ++k)
@@ -801,7 +845,7 @@ int main(int argc, char** argv)
         };
         std::cout << "before: hasClip=" << roll->hasPreviewClip() << " take=" << roll->getMonoTakeState() << "\n";
         playHead.pos = 48000 * 4;                    // song position 4 s
-        sing(94 * 4, true, 0.25f);                   // ~4 s of singing while the DAW plays
+        sing(94 * juce::SystemStats::getEnvironmentVariable("TEST_TAKE_SEC", "4").getIntValue(), true, 0.25f);   // singing while the DAW plays
         std::cout << "while DAW plays: take=" << roll->getMonoTakeState() << " len=" << q.monoTake.length.load() << "\n";
         sing(4, false, 0.0f);                        // DAW stops
         pump(500);

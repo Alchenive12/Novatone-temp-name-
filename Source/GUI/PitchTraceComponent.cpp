@@ -14,7 +14,7 @@ PitchTraceComponent::PitchTraceComponent(PitchTraceQueue& queueToDrain)
     : queue(queueToDrain)
 {
     popScratch.reserve(256);
-    timeline.reserve(maxTimelineHops);
+    timeline.reserve(8192);
     notes.reserve(256);
     setOpaque(false);
     setWantsKeyboardFocus(true);
@@ -668,14 +668,13 @@ void PitchTraceComponent::adoptMonoTake()
     auto& t = queue.monoTake;
     const int len = t.length.load(std::memory_order_acquire);
     const juce::int64 songStart = t.songStart.load();
-    if (len <= 0 || t.audio.getNumSamples() < len)
+    if (len <= 0)
     {
         t.state.store(PitchTraceQueue::MonoTake::idle);
         return;
     }
-    juce::AudioBuffer<float> take(2, len);
-    for (int ch = 0; ch < 2; ++ch)
-        take.copyFrom(ch, 0, t.audio, ch, 0, len);
+    juce::AudioBuffer<float> take;
+    t.copyTo(take);
     const double rate = t.rate;
     t.state.store(PitchTraceQueue::MonoTake::idle, std::memory_order_release);
 
@@ -1983,7 +1982,7 @@ void PitchTraceComponent::timerCallback()
     const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
     queue.popAll(popScratch);
 
-    bool needsRepaint = false;
+    bool needsRepaint = animateNoteCentres();   // notes glide onto their centre when Center / edits pull them
 
     if (isClipMode())
     {
@@ -2167,11 +2166,45 @@ float PitchTraceComponent::xToHop(float x, juce::Rectangle<float> grid) const no
     return viewStartHop + norm * juce::jmax(8.0f, visibleHopsCount);
 }
 
+float PitchTraceComponent::heardCentreMidi(const NewtoneNoteBlock& n) const noexcept
+{
+    if (n.isSibilant) return n.detectedMidi;
+    if (isClipMode()) return n.effectiveTargetMidi();   // unedited poly notes keep their sung cents
+    // Same rule as the tuner: a pitch-edited note lands on its target, the rest are pulled by Center.
+    const float c = n.pitchEdited ? juce::jlimit(0.0f, 1.0f, n.noteCenter)
+                                  : juce::jlimit(0.0f, 1.0f, queue.globalCenter.load(std::memory_order_relaxed) * n.noteCenter);
+    return n.detectedMidi + c * (n.effectiveTargetMidi() - n.detectedMidi);
+}
+
+float PitchTraceComponent::displayedCentreMidi(const NewtoneNoteBlock& n) const noexcept
+{
+    const auto it = shownCentre.find(n.id);
+    return it != shownCentre.end() ? it->second : heardCentreMidi(n);
+}
+
+bool PitchTraceComponent::animateNoteCentres()
+{
+    bool moving = false;
+    const bool dragging = currentDragAction != DragAction::None;   // follow the mouse without lag
+    std::unordered_map<int, float> next;
+    next.reserve(notes.size());
+    for (const auto& n : notes)
+    {
+        const float target = heardCentreMidi(n);
+        const auto it = shownCentre.find(n.id);
+        float v = (it == shownCentre.end() || dragging) ? target : it->second + 0.10f * (target - it->second);
+        if (std::abs(target - v) < 0.002f) v = target; else moving = true;
+        next[n.id] = v;
+    }
+    shownCentre.swap(next);
+    return moving;
+}
+
 juce::Rectangle<float> PitchTraceComponent::getNoteRect(const NewtoneNoteBlock& note, juce::Rectangle<float> grid) const noexcept
 {
     const float x1 = hopToX(static_cast<float>(note.startHop + note.warpOffsetHops), grid);
     const float x2 = hopToX(static_cast<float>(note.endHop + note.warpOffsetHops), grid);
-    const float pitchCenter = note.isSibilant ? note.detectedMidi : note.effectiveTargetMidi();
+    const float pitchCenter = displayedCentreMidi(note);
     const float yTop = midiNoteToY(pitchCenter + 0.46f);
     const float yBot = midiNoteToY(pitchCenter - 0.46f);
     return juce::Rectangle<float>(juce::jmin(x1, x2), juce::jmin(yTop, yBot),
@@ -2225,7 +2258,11 @@ float PitchTraceComponent::evaluateShapedMidiAtHop(int hopIdx, float globalCente
     const float hGate      = juce::jlimit(0.0f, 1.0f, hDrive);
     const float hExtreme   = juce::jlimit(0.0f, 1.0f, hDrive - 1.0f);
 
-    const float baseCenter = juce::jlimit(0.0f, 1.0f, globalCenter * nb->noteCenter);
+    // Same rules as the tuner: dry when nothing corrects, pitch-edited notes land on their target.
+    if (! nb->pitchEdited && globalCenter * nb->noteCenter < 0.002f
+        && std::abs(globalVariation * nb->noteVariation - 1.0f) < 0.01f && hDrive < 0.01f)
+        return th.rawMidi;
+    const float baseCenter = juce::jlimit(0.0f, 1.0f, nb->pitchEdited ? nb->noteCenter : globalCenter * nb->noteCenter);
     const float effCenter  = baseCenter * (1.0f - 0.06f * hDrive);
     const float rawVar     = juce::jlimit(0.0f, 2.0f, globalVariation * nb->noteVariation);
     const float effVar     = juce::jmax(rawVar, 0.35f * hGate + 0.25f * hExtreme);
@@ -2691,19 +2728,27 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
             continue;
         }
 
-        // 3a. Ghost Block at nearest originally sung semitone (dashed/faint slate outline)
-        if (note.nearestMidi != note.targetMidi || std::abs(note.fineCents) > 1.0f)
+        // 3a. Where the note is being pulled: a guide line at the semitone centre while it's off it,
+        //     and a faint outline where it was sung once it has moved away from there.
+        const float shownM = displayedCentreMidi(note);
+        const int   centreSemi = static_cast<int>(std::lround(shownM));
+        const float offCents = (shownM - static_cast<float>(centreSemi)) * 100.0f;
+        if (std::abs(note.detectedMidi - shownM) > 0.05f)
         {
-            const float gx1   = hopToX(static_cast<float>(note.startHop), grid);
-            const float gx2   = hopToX(static_cast<float>(note.endHop), grid);
-            const float gyTop = midiNoteToY(static_cast<float>(note.nearestMidi) + 0.44f);
-            const float gyBot = midiNoteToY(static_cast<float>(note.nearestMidi) - 0.44f);
-            const juce::Rectangle<float> ghostRect(gx1, gyTop, juce::jmax(4.0f, gx2 - gx1), juce::jmax(4.0f, gyBot - gyTop));
-
-            g.setColour(pitchTraceUncorrected.withAlpha(0.16f));
+            const float gyTop = midiNoteToY(note.detectedMidi + 0.44f);
+            const float gyBot = midiNoteToY(note.detectedMidi - 0.44f);
+            const juce::Rectangle<float> ghostRect(rect.getX(), gyTop, rect.getWidth(), juce::jmax(4.0f, gyBot - gyTop));
+            g.setColour(pitchTraceUncorrected.withAlpha(0.10f));
             g.fillRoundedRectangle(ghostRect, 4.0f);
-            g.setColour(pitchTraceUncorrected.withAlpha(0.45f));
+            g.setColour(pitchTraceUncorrected.withAlpha(0.40f));
             g.drawRoundedRectangle(ghostRect, 4.0f, 1.0f);
+        }
+        if (std::abs(offCents) >= 3.0f)
+        {
+            const float cy = midiNoteToY(static_cast<float>(centreSemi));
+            const float dashes[] = { 4.0f, 3.0f };
+            g.setColour(textPrimary.withAlpha(0.45f));
+            g.drawDashedLine(juce::Line<float>(rect.getX() + 2.0f, cy, rect.getRight() - 2.0f, cy), dashes, 2, 1.0f);
         }
 
         // 3b. Target note block: flat tinted fill
@@ -2763,9 +2808,10 @@ void PitchTraceComponent::paintGridAndNotes(juce::Graphics& g, juce::Rectangle<f
         // 3e. Note name + cents offset
         if (rect.getWidth() > 26.0f && rect.getHeight() >= 11.0f)
         {
-            juce::String label = midiNoteName(note.targetMidi);
-            if (std::abs(note.fineCents) >= 1.0f)
-                label += (note.fineCents > 0.0f ? " +" : " ") + juce::String(juce::roundToInt(note.fineCents)) + "c";
+            // How far off centre the note is heard (name of the nearest semitone + cents)
+            juce::String label = midiNoteName(centreSemi);
+            if (std::abs(offCents) >= 1.0f)
+                label += (offCents > 0.0f ? " +" : " ") + juce::String(juce::roundToInt(offCents)) + "c";
 
             g.setFont(HarmonyEngineUI::font(juce::jlimit(9.5f, 11.0f, rect.getHeight() * 0.8f), true));
             g.setColour(isLightChassis ? juce::Colours::white : textPrimary);
@@ -3777,7 +3823,7 @@ void PitchTraceComponent::filesDropped(const juce::StringArray& files, int, int)
         return;
 
     const int maxSamples = static_cast<int>(std::min<int64_t>(reader->lengthInSamples,
-                                                                static_cast<int64_t>(reader->sampleRate * 45.0)));
+                                                                static_cast<int64_t>(reader->sampleRate * maxLoadSeconds)));
     juce::AudioBuffer<float> fileBuf(static_cast<int>(std::min<unsigned int>(2u, reader->numChannels)), maxSamples);
     reader->read(&fileBuf, 0, maxSamples, 0, true, true);
     analyzeAudioBufferIntoNotes(fileBuf, reader->sampleRate);
@@ -3846,8 +3892,9 @@ void PitchTraceComponent::analyzeAudioBufferIntoNotes(const juce::AudioBuffer<fl
         pd.uncorrectedPitchHz = voiced ? mpm.pitchHz : 0.0f;
         pd.correctedPitchHz   = voiced ? mpm.pitchHz : 0.0f;
 
-        // Extract polyphonic chord voices via Two-Zone Bass/Upper Sub-Harmonic Projection (eliminates octave confusions):
-        if (rms > 0.003f && !sib)
+        // Extract polyphonic chord voices via Two-Zone Bass/Upper Sub-Harmonic Projection (eliminates octave confusions).
+        // Only for the roll's own poly view: a big FFT per hop made long Mono files take ages to load.
+        if (polyphonicModeEnabled && rms > 0.003f && !sib)
         {
             std::vector<float> candMidis;
             const int polyWin = juce::jmin(numSamples - start, windowSize * 4);

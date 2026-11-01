@@ -129,8 +129,13 @@ namespace
     };
 }
 
-void NovaToneAudioProcessor::parameterChanged(const juce::String& parameterID, float)
+void NovaToneAudioProcessor::parameterChanged(const juce::String& parameterID, float newValue)
 {
+    // The roll draws notes where Center puts them: keep its copy current even while no audio runs.
+    if (parameterID == "tune_center")         pitchQueue.globalCenter.store(newValue, std::memory_order_relaxed);
+    if (parameterID == "tune_variation")      pitchQueue.globalVariation.store(newValue, std::memory_order_relaxed);
+    if (parameterID == "tune_humanizeAmount") pitchQueue.globalHumanizeAmount.store(newValue, std::memory_order_relaxed);
+
     if (parameterID == "tune_smooth" || parameterID == "tune_lookahead")
     {
         syncRequested = true;
@@ -524,7 +529,7 @@ void NovaToneAudioProcessor::captureMonoTake(const juce::AudioBuffer<float>& buf
     auto& t = pitchQueue.monoTake;
     auto& mp = pitchQueue.monoPreview;
     const bool polyMode = tunePolyphonicParam != nullptr && tunePolyphonicParam->load(std::memory_order_relaxed) > 0.5f;
-    if (polyMode || t.audio.getNumSamples() == 0)
+    if (polyMode)
         return;
 
     const int n = buffer.getNumSamples();
@@ -579,17 +584,11 @@ void NovaToneAudioProcessor::captureMonoTake(const juce::AudioBuffer<float>& buf
         t.nextHostSample = *hostSample + n;
     }
 
-    const int len = t.length.load(std::memory_order_relaxed);
-    const int room = t.audio.getNumSamples() - len;
-    const int count = juce::jmin(n, room);
-    const int chans = buffer.getNumChannels();
-    for (int ch = 0; ch < 2 && count > 0; ++ch)
-        t.audio.copyFrom(ch, len, buffer, juce::jmin(ch, chans - 1), 0, count);
-    if (count > 0)
-        t.peak = juce::jmax(t.peak, buffer.getMagnitude(0, count));
-    t.length.store(len + count, std::memory_order_release);
-    if (count < n)
-        finish(); // full (45 s)
+    const int written = t.append(buffer, n);
+    if (written > 0)
+        t.peak = juce::jmax(t.peak, buffer.getMagnitude(0, written));
+    if (written < n)
+        finish(); // full (10 min) or the allocator fell behind
 }
 
 void NovaToneAudioProcessor::renderMonoPreview(juce::AudioBuffer<float>& buffer, std::optional<juce::int64> hostSample, bool hostPlaying)
