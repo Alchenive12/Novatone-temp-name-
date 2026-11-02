@@ -116,6 +116,11 @@ public:
     std::vector<MidiChordTrack::LeadNote> getLeadHistory() const;
     void clearLeadHistory() noexcept { leadHistoryClear.store(true); }
 
+    /** Choirize without playing the song (chords from the MIDI file): renders the parts.wav the Choirize recorder
+        would have recorded - lead + each harmony voice - from the Tune tab's Mono clip, offline. Any thread. */
+    bool renderChoirPartsOffline(const juce::File& wavOut, const std::vector<int>& parts, std::vector<int>& lo, std::vector<int>& hi,
+                                 double& rateOut, juce::int64& startOut, const std::function<bool(float)>& progress, juce::String& error);
+
 private:
     std::shared_ptr<const MidiChordTrack> harmonyMidi;   // message thread owns; audio reads under the lock
     juce::SpinLock harmonyMidiLock;
@@ -133,6 +138,8 @@ private:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void pushParametersToEngines() noexcept;
+    void applyHarmonyVoices(HarmonyEngine&) noexcept;
+    void applyHarmonyMix(HarmonyEngine&) noexcept;
     /** Tune / Alter settings + the note edit at `engineHop` (shared by playback and the offline WAV export).
         Returns the note's formant shift. */
     float configureEngines(TuneEngine& te, AlterEngine& ae, int engineHop, bool allowLiveOverride) noexcept;

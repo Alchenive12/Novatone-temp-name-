@@ -603,6 +603,115 @@ int main(int argc, char** argv)
         }
     }
 
+    if (argc > 8 && juce::String(argv[8]) == "choiroffline")
+    {
+        juce::MidiMessageSequence seq;
+        const int chordsMidi[4][3] = { { 48, 52, 55 }, { 45, 48, 52 }, { 41, 45, 48 }, { 43, 47, 50 } };
+        for (int bar = 0; bar < 8; ++bar)
+            for (int n : chordsMidi[bar % 4])
+            { seq.addEvent(juce::MidiMessage::noteOn(1, n, (juce::uint8) 90), bar * 1920.0); seq.addEvent(juce::MidiMessage::noteOff(1, n), (bar + 1) * 1920.0 - 1.0); }
+        seq.updateMatchedPairs();
+        juce::MidiFile mf; mf.setTicksPerQuarterNote(480); mf.addTrack(seq);
+        const auto mid = outDir.getChildFile("chords.mid"); mid.deleteFile();
+        { juce::FileOutputStream os(mid); mf.writeTo(os); }
+        juce::String err; np->loadHarmonyMidi(mid, err);
+        for (auto [id, v] : { std::pair<const char*, float> { "harm_source", 3.0f }, { "harm_v1_on", 1.0f }, { "harm_v2_on", 1.0f } })
+            if (auto* prm = np->apvts.getParameter(id)) prm->setValueNotifyingHost(prm->convertTo0to1(v));
+        std::unique_ptr<juce::AudioProcessorEditor> med(proc->createEditor());
+        med->setSize(w, h); med->setVisible(true); pump(300);
+        const auto& eng = np->getHarmonyEngine();
+        // the lead: chord tones of each bar's chord, 2 notes per bar (C: E G, Am: A C, F: F A, G: G B)
+        const int leadTones[4][2] = { { 64, 67 }, { 69, 72 }, { 65, 69 }, { 67, 71 } };
+        auto leadSample = [&](juce::int64 pos, double& lph)
+        {
+            const double t = pos / 48000.0, beat = t / 0.5;
+            const int c = ((int) (beat / 4.0)) % 4, note = leadTones[c][((int) (beat / 2.0)) % 2];
+            const bool gap = std::fmod(beat, 2.0) > 1.85;
+            lph += 2 * 3.14159265 * 440.0 * std::pow(2.0, (note - 69) / 12.0) / 48000.0;
+            double hs = 0; for (int hN = 1; hN <= 8; ++hN) hs += std::sin(hN * lph) / hN;
+            return gap ? 0.0f : (float) (0.2 * hs);
+        };
+        const int blocks = (int) (14.0 * 48000 / 512);
+        // 1) the song plays once: Mono auto-records the lead; also capture what the live engine sings on voice 1
+        juce::AudioBuffer<float> live(2, blocks * 512); double lph = 0;
+        playHead.pos = 0;
+        for (int b = 0; b < blocks; ++b)
+        {
+            for (int i = 0; i < 512; ++i) { const float sm = leadSample(playHead.pos + i, lph); buf.setSample(0, i, sm); buf.setSample(1, i, sm); }
+            playHead.playing = true; proc->processBlock(buf, midi); playHead.pos += 512;
+            for (int v = 0; v < 2; ++v) live.copyFrom(v, b * 512, eng.getVoiceStem(v), 512);
+            if (b % 8 == 0) pump(5);
+        }
+        playHead.playing = false; buf.clear(); proc->processBlock(buf, midi); pump(600);
+        const int lat = proc->getLatencySamples();
+        // 2) Choirize offline (the button's path)
+        const auto dir = outDir.getChildFile("offline_take"); dir.deleteRecursively();
+        std::vector<int> lo, hi; double rate = 0; juce::int64 start = -1;
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        const bool ok = np->renderChoirPartsOffline(dir.getChildFile("parts.wav"), { 1, 2 }, lo, hi, rate, start, [](float) { return true; }, err);
+        std::cout << "offline render ok=" << ok << " " << err << " in " << juce::String(juce::Time::getMillisecondCounterHiRes() - t0, 0) << " ms; rate " << rate
+                  << " start " << start << "; voice ranges " << lo[0] << "-" << hi[0] << ", " << lo[1] << "-" << hi[1] << "\n";
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd(fm.createReaderFor(dir.getChildFile("parts.wav")));
+        juce::AudioBuffer<float> parts((int) rd->numChannels, (int) rd->lengthInSamples);
+        rd->read(&parts, 0, parts.getNumSamples(), 0, true, true);
+        std::cout << "parts.wav: " << rd->numChannels << " channels, " << juce::String(parts.getNumSamples() / 48000.0, 2) << " s\n";
+        {
+            auto noteAt = [&](const float* d, int from, int win) -> juce::String
+            {
+                double e = 0; for (int i = from; i < from + win; ++i) e += d[i] * d[i];
+                if (e < win * 1e-4) return "--";
+                // normalised autocorrelation, first strong peak (70..1000 Hz)
+                int best = -1; double bestR = 0;
+                for (int lag = 48; lag <= 685; ++lag)
+                {
+                    double num = 0, e1 = 0, e2 = 0;
+                    for (int i = from; i < from + win - lag; ++i) { num += d[i] * d[i + lag]; e1 += d[i] * d[i]; e2 += d[i + lag] * d[i + lag]; }
+                    const double r = num / std::sqrt(e1 * e2 + 1e-12);
+                    if (r > 0.8 && (best < 0 || r > bestR + 0.02)) { if (best >= 0 && lag > best * 1.5) break; best = lag; bestR = r; }
+                }
+                if (best < 0) return "??";
+                return juce::String(69.0 + 12.0 * std::log2(48000.0 / best / 440.0), 1);
+            };
+            int same[2] = { 0, 0 }, total = 0;
+            std::cout << "t(s)  lead  | v1 offline  v1 live | v2 offline  v2 live\n";
+            for (double t = 1.0; t < 13.0; t += 0.5)
+            {
+                const int i = (int) (t * 48000);
+                juce::String row = juce::String(t, 1) + "  " + noteAt(parts.getReadPointer(0), i, 2400);
+                for (int v = 0; v < 2; ++v)
+                {
+                    const auto o = noteAt(parts.getReadPointer(v + 1), i, 2400), l = noteAt(live.getReadPointer(v), i + lat, 2400);
+                    row += "  | " + o + "  " + l;
+                    if (std::abs(o.getDoubleValue() - l.getDoubleValue()) < 0.5) ++same[v];
+                }
+                ++total;
+                if ((int) (t * 2) % 4 == 0) std::cout << row << "\n";
+            }
+            std::cout << "same note offline vs live: voice 1 " << same[0] << "/" << total << ", voice 2 " << same[1] << "/" << total << "\n";
+        }
+        // 4) the actual button
+        {
+            std::function<void(juce::Component&)> show = [&](juce::Component& c)
+            { for (auto* ch : c.getChildren()) { if (dynamic_cast<HarmonyTab*>(ch) != nullptr) ch->setVisible(true); else if (dynamic_cast<TuneTab*>(ch) != nullptr) ch->setVisible(false); else show(*ch); } };
+            show(*med); pump(200);
+            auto& choir = np->getChoir();
+            const int before = choir.getNumTakes();
+            std::function<juce::TextButton*(juce::Component&)> findBtn = [&](juce::Component& c) -> juce::TextButton*
+            { if (auto* b = dynamic_cast<juce::TextButton*>(&c); b != nullptr && b->getButtonText() == "Choirize") return b; for (auto* ch : c.getChildren()) if (auto* r = findBtn(*ch)) return r; return nullptr; };
+            if (auto* btn = findBtn(*med)) btn->triggerClick();
+            pump(150);
+            save(*med, outDir.getChildFile("choir_offline_progress.png"), 1.0f);
+            const auto t1 = juce::Time::getMillisecondCounter();
+            while (choir.getNumTakes() == before && juce::Time::getMillisecondCounter() - t1 < 20000) pump(50);
+            pump(300);
+            std::cout << "button: takes " << before << " -> " << choir.getNumTakes() << " (no playback), choir on: " << choir.enabled.load()
+                      << ", part 1 notes: " << (choir.partNotes(1) ? (int) choir.partNotes(1)->size() : -1) << "\n";
+            save(*med, outDir.getChildFile("choir_offline_done.png"), 1.0f);
+        }
+        med.reset(); proc->releaseResources(); return 0;
+    }
+
     if (argc > 8 && juce::String(argv[8]) == "chordedit")
     {
         juce::MidiMessageSequence seq;

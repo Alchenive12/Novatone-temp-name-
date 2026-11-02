@@ -356,6 +356,8 @@ void HarmonyTab::paintExportBar (juce::Graphics& g)
 
 HarmonyTab::~HarmonyTab()
 {
+    offlineCancel.store (true);
+    if (offlineThread.joinable()) offlineThread.join();
     stopTimer();
     for (auto* b : { &exportButton, &saveAsButton, &showButton, &choirizeButton, &choirOnButton }) b->setLookAndFeel (nullptr);
     dragButton.setLookAndFeel (nullptr);
@@ -395,7 +397,7 @@ void HarmonyTab::timerCallback()
     {
         using S = HarmonyExporter::State;
         const auto cs = choirRecorder.getState();
-        choirizeButton.setButtonText (cs == S::armed ? "Cancel" : cs == S::recording ? "Stop" : "Choirize");
+        choirizeButton.setButtonText (offlineThread.joinable() ? "Cancel" : cs == S::armed ? "Cancel" : cs == S::recording ? "Stop" : "Choirize");
         if (choirOnButton.getToggleState() != choir.enabled.load()) choirOnButton.setToggleState (choir.enabled.load(), juce::dontSendNotification);
         if ((bool) choirOnButton.getProperties()["accentButton"] != choirOnButton.getToggleState())
         { choirOnButton.getProperties().set ("accentButton", choirOnButton.getToggleState()); choirOnButton.repaint(); }
@@ -755,6 +757,7 @@ void HarmonyTab::toggleChoirize()
     using S = HarmonyExporter::State;
     const auto st = choirRecorder.getState();
     if (st == S::armed || st == S::recording) { choirRecorder.stop(); return; }
+    if (offlineThread.joinable()) { offlineCancel.store (true); return; }   // rendering offline: cancel
     ChoirSession::PendingArm a;
     for (int v = 1; v <= HarmonyEngine::numVoices; ++v)
         if (auto* p = apvts.getRawParameterValue ("harm_v" + juce::String (v) + "_on"); p != nullptr && p->load() > 0.5f)
@@ -766,7 +769,43 @@ void HarmonyTab::toggleChoirize()
     if (a.parts.empty()) { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Choirize", "Turn on at least one voice first."); return; }
     for (size_t k = 0; k < a.parts.size(); ++k)   // MIDI mode: lowest held note -> first voice on, so registers go up in voice order
         a.regs.push_back (engine.isMidiMode() ? (int) (k * 4 / a.parts.size()) : choirRegisterFor (engine.getVoiceMode (a.parts[k] - 1)));
+    if (fileSource() && renderChoirOffline != nullptr) { choirizeOffline (std::move (a)); return; }   // the chords are known: no playback needed
     choir.beginArm (choirRecorder, std::move (a));
+}
+
+void HarmonyTab::choirizeOffline (ChoirSession::PendingArm a)
+{
+    const auto dir = choir.prepareOfflineTake();
+    offlineCancel.store (false);
+    offlineProgress.store (0.0f);
+    auto render = renderChoirOffline;
+    juce::Component::SafePointer<HarmonyTab> safe (this);
+    offlineThread = std::thread ([this, safe, render, dir, a = std::move (a)]() mutable
+    {
+        std::vector<int> lo, hi;
+        double rate = 48000.0; juce::int64 start = 0; juce::String err;
+        const bool ok = render (dir.getChildFile ("parts.wav"), a.parts, lo, hi, rate, start,
+                                [this] (float p) { offlineProgress.store (juce::jlimit (0.0f, 0.999f, p)); return ! offlineCancel.load(); }, err);
+        juce::MessageManager::callAsync ([safe, ok, dir, a, lo, hi, rate, start, err]
+        {
+            if (safe == nullptr) return;
+            if (safe->offlineThread.joinable()) safe->offlineThread.join();
+            safe->offlineProgress.store (-1.0f);
+            if (ok)
+            {
+                safe->choir.createFromRecording (dir, rate, start, a.parts, a.regs, lo, hi, a.singers, a.doubles);
+                safe->choir.enabled.store (true);
+                for (auto& v : safe->voiceCards) { v->refreshSinger(); v->repaint(); }
+            }
+            else
+            {
+                dir.deleteRecursively();
+                if (err != "Cancelled.")
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Choirize", err);
+            }
+            safe->repaint();
+        });
+    });
 }
 
 juce::StringArray HarmonyTab::exportStems()
@@ -785,10 +824,13 @@ void HarmonyTab::paintChoirBar (juce::Graphics& g)
     juce::String text; juce::Colour dot = textSecondary;
     const auto st = choirRecorder.getState();
     const int pending = choir.pendingCount();
-    if (st == S::armed)          { text = "Choirize armed - press play in FL Studio, stop when the section is done"; dot = accent; }
+    if (const float op = offlineProgress.load(); op >= 0.0f)
+    { text = "Choirizing from the MIDI chords (no playback needed)  " + juce::String (juce::roundToInt (op * 100.0f)) + "%"; dot = accentBright; }
+    else if (st == S::armed)          { text = "Choirize armed - press play in FL Studio, stop when the section is done"; dot = accent; }
     else if (st == S::recording) { text = "Recording the voices  " + juce::String (choirRecorder.getSecondsRecorded(), 1) + " s"; dot = (juce::Time::getMillisecondCounter() / 400) % 2 ? accentBright : accent; }
     else if (pending > 0)        { text = "Making " + juce::String (pending) + (pending == 1 ? " singer" : " singers") + " (about 30 s each) - the Choir helper must be running"; dot = cyanAccent; }
     else if (choir.getNumTakes() > 0) { text = "Choirized (rendered, not live): swap singers, click notes for AI / your voice / mute, drag the stems. Changed the harmonies? Choirize again"; dot = mintAccent; }
+    else if (fileSource()) text = "MIDI file chords: Choirize renders straight from your Tune tab vocal - no need to play the song (AI singers about 30 s each)";
     else text = "Harmonies play live. AI singers aren't live: pick them, press Choirize and play the section to render them (about 30 s each)";
     g.setColour (dot);
     g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ (float) choirStatus.getX() + 4.0f, (float) choirStatus.getCentreY() }));

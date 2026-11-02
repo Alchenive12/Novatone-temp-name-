@@ -517,6 +517,132 @@ bool NovaToneAudioProcessor::renderMonoClipOffline(const juce::AudioBuffer<float
     return true;
 }
 
+void NovaToneAudioProcessor::applyHarmonyVoices(HarmonyEngine& h) noexcept
+{
+    auto loadP = [](std::atomic<float>* p, float def) { return p != nullptr ? p->load(std::memory_order_relaxed) : def; };
+    for (int v = 0; v < HarmonyEngine::numVoices; ++v)
+    {
+        const auto& hp = harmVoiceParams[(size_t)v];
+        HarmonyEngine::VoiceSettings vs;
+        vs.on = loadP(hp.on, 0.0f) > 0.5f;
+        vs.mode = juce::roundToInt(loadP(hp.mode, 0.0f));
+        vs.levelDb = loadP(hp.level, -6.0f);
+        vs.pan = loadP(hp.pan, 0.0f);
+        vs.formant = loadP(hp.formant, 0.0f);
+        h.setVoice(v, vs);
+    }
+}
+
+void NovaToneAudioProcessor::applyHarmonyMix(HarmonyEngine& h) noexcept
+{
+    auto loadP = [](std::atomic<float>* p, float def) { return p != nullptr ? p->load(std::memory_order_relaxed) : def; };
+    h.setHumanize(loadP(harmHumanizeParam, 0.4f));
+    h.setHarmonyGainDb(loadP(harmMixParam, 0.0f));
+    h.setLeadGainDb(loadP(harmLeadParam, 0.0f));
+    h.setScaleMask(packScaleDegreeMask());
+    h.setKeyRoot(currentRoot());
+}
+
+bool NovaToneAudioProcessor::renderChoirPartsOffline(const juce::File& wavOut, const std::vector<int>& parts,
+                                                     std::vector<int>& lo, std::vector<int>& hi,
+                                                     double& rateOut, juce::int64& startOut,
+                                                     const std::function<bool(float)>& progress, juce::String& error)
+{
+    // The lead: the Tune tab's Mono clip (a take or a loaded file), tuned exactly as playback / Export WAV
+    std::shared_ptr<const juce::AudioBuffer<float>> clip;
+    double clipRate = 48000.0; int hop = 512;
+    auto& mp = pitchQueue.monoPreview;
+    {
+        const juce::SpinLock::ScopedLockType sl(mp.lock);
+        clip = mp.clip; clipRate = mp.clipRate; hop = mp.hopSamples;
+    }
+    if (clip == nullptr || clip->getNumSamples() == 0)
+    { error = "No lead vocal yet: record a take or load your vocal in the Tune tab (Mono) first."; return false; }
+    const auto chords = getHarmonyMidi();
+    if (chords == nullptr || chords->segments.empty())
+    { error = "No chords yet: import a MIDI file or write chords first."; return false; }
+
+    juce::AudioBuffer<float> lead;
+    if (! renderMonoClipOffline(*clip, clipRate, hop, lead, [&](float p) { return ! progress || progress(0.45f * p); }))
+    { error = "Cancelled."; return false; }
+
+    const double sessionRate = getSampleRate() > 0.0 ? getSampleRate() : clipRate;
+    const juce::int64 songStart = std::max<juce::int64>(0, mp.timelineStart.load());   // a loaded file starts at bar 1
+    const double bpm = juce::jmax(1.0, pitchQueue.hostBpm.load());
+    const double off = harmMidiOffsetParam != nullptr ? harmMidiOffsetParam->load() : 0.0;
+
+    constexpr int blockSize = 512;
+    auto h = std::make_unique<HarmonyEngine>();
+    h->prepare(clipRate, blockSize);
+    applyHarmonyVoices(*h);
+    applyHarmonyMix(*h);
+    h->setUseSidechainChords(false);
+    h->setMidiMode(false);
+    const int lat = h->getMinTotalLatency();
+    h->setTotalLatency(lat);
+
+    const int len = lead.getNumSamples();
+    constexpr int numStems = 1 + HarmonyEngine::numVoices;   // lead + voices, as the Choirize recorder writes them
+    juce::AudioBuffer<float> stems(numStems, len);
+    stems.clear();
+    lo.assign(parts.size(), 0); hi.assign(parts.size(), 0);
+    juce::AudioBuffer<float> dry(1, blockSize), io(1, blockSize);
+    for (int pos = 0, blk = 0; pos < len + lat; pos += blockSize, ++blk)
+    {
+        dry.clear();
+        const int avail = juce::jlimit(0, blockSize, len - pos);
+        if (avail > 0)
+        {
+            dry.copyFrom(0, 0, lead, 0, pos, avail);
+            if (lead.getNumChannels() > 1) { dry.addFrom(0, 0, lead, 1, pos, avail); dry.applyGain(0.5f); }
+        }
+        io.makeCopyOf(dry, true);
+        // chord at this point of the song (same rule as playback: file position = song position - offset)
+        const double songSec = (double) songStart / sessionRate + (double) pos / clipRate;
+        const auto* seg = chords->at(songSec * bpm / 60.0 - off);
+        h->setExternalChord(true, seg != nullptr, seg != nullptr ? seg->mask : 0, seg != nullptr ? seg->root : -1, seg != nullptr ? seg->quality : 0);
+        h->process(dry, io);
+        for (size_t k = 0; k < parts.size(); ++k)
+            if (const int n = h->getVoiceNote(parts[k] - 1); n > 0)
+            { lo[k] = lo[k] == 0 ? n : juce::jmin(lo[k], n); hi[k] = juce::jmax(hi[k], n); }
+        // drop the engine's latency so the parts line up with the lead
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const int o = pos + i - lat;
+            if (o < 0 || o >= len) continue;
+            stems.setSample(0, o, h->getLeadStem()[i]);
+            for (int v = 0; v < HarmonyEngine::numVoices; ++v) stems.setSample(v + 1, o, h->getVoiceStem(v)[i]);
+        }
+        if (progress && blk % 64 == 0 && ! progress(0.45f + 0.5f * (float) pos / (float) (len + lat)))
+        { error = "Cancelled."; return false; }
+    }
+
+    // the Choir plays takes at the session's rate
+    if (std::abs(clipRate - sessionRate) > 0.5)
+    {
+        const double ratio = clipRate / sessionRate;
+        const int outLen = (int) std::floor(len / ratio);
+        juce::AudioBuffer<float> res(numStems, outLen);
+        for (int ch = 0; ch < numStems; ++ch)
+        { juce::LagrangeInterpolator li; li.process(ratio, stems.getReadPointer(ch), res.getWritePointer(ch), outLen); }
+        stems = std::move(res);
+    }
+
+    wavOut.getParentDirectory().createDirectory();
+    wavOut.deleteFile();
+    auto stream = std::make_unique<juce::FileOutputStream>(wavOut);
+    if (! stream->openedOk()) { error = "Can't write " + wavOut.getFullPathName(); return false; }
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> w(wav.createWriterFor(stream.get(), sessionRate, (unsigned int) numStems, 24, {}, 0));
+    if (w == nullptr) { error = "Can't create the WAV writer."; return false; }
+    stream.release();
+    if (! w->writeFromAudioSampleBuffer(stems, 0, stems.getNumSamples())) { error = "Writing the parts failed."; return false; }
+    rateOut = sessionRate;
+    startOut = songStart;
+    if (progress) progress(1.0f);
+    return true;
+}
+
 void NovaToneAudioProcessor::pushParametersToEngines() noexcept
 {
     auto load = [](const std::atomic<float>* p, float fallback) noexcept {
@@ -805,17 +931,7 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
 
     // Harmony: settings, sidechain chords, and a copy of the dry lead for the voices
     auto loadP = [](std::atomic<float>* p, float def) { return p != nullptr ? p->load(std::memory_order_relaxed) : def; };
-    for (int v = 0; v < HarmonyEngine::numVoices; ++v)
-    {
-        const auto& hp = harmVoiceParams[(size_t)v];
-        HarmonyEngine::VoiceSettings vs;
-        vs.on = loadP(hp.on, 0.0f) > 0.5f;
-        vs.mode = juce::roundToInt(loadP(hp.mode, 0.0f));
-        vs.levelDb = loadP(hp.level, -6.0f);
-        vs.pan = loadP(hp.pan, 0.0f);
-        vs.formant = loadP(hp.formant, 0.0f);
-        harmony.setVoice(v, vs);
-    }
+    applyHarmonyVoices(harmony);
     for (const auto m : midiMessages)   // held notes for the Harmony tab's MIDI mode
     {
         const auto msg = m.getMessage();
@@ -911,13 +1027,9 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
     const bool choirRecording = recState == HarmonyExporter::State::armed || recState == HarmonyExporter::State::recording;
     if (harmonyOn && ! (choir.enabled.load(std::memory_order_relaxed) && ! choirRecording) && harmonyDry.getNumSamples() >= buffer.getNumSamples())
     {
-        harmony.setHumanize(loadP(harmHumanizeParam, 0.4f));
-        harmony.setHarmonyGainDb(loadP(harmMixParam, 0.0f));
-        harmony.setLeadGainDb(loadP(harmLeadParam, 0.0f));
+        applyHarmonyMix(harmony);
         harmony.setUseSidechainChords(juce::roundToInt(loadP(harmSourceParam, 0.0f)) == 0);
         harmony.setMidiMode(juce::roundToInt(loadP(harmSourceParam, 0.0f)) == 2);
-        harmony.setScaleMask(packScaleDegreeMask());
-        harmony.setKeyRoot(currentRoot());
         harmony.setTotalLatency(getLatencySamples());
         juce::AudioBuffer<float> dryView(harmonyDry.getArrayOfWritePointers(), juce::jmin(harmonyDry.getNumChannels(), buffer.getNumChannels()), buffer.getNumSamples());
         harmony.process(dryView, buffer);

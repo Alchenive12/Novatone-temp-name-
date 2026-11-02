@@ -273,6 +273,8 @@ public:
     float getChroma (int pc) const noexcept { return chords.getChroma (pc); }
     float getLeadMidi() const noexcept { return publishedLead.load (std::memory_order_relaxed); }
     int   getVoiceNote (int i) const noexcept { return voices[(size_t) i].publishedNote.load (std::memory_order_relaxed); }
+    /** Smallest total latency the voices can be aligned to (offline rendering uses exactly this). */
+    int   getMinTotalLatency() const noexcept { return preDelaySamples + shifterLatency; }
     int   getLatencyShortfall() const noexcept { return juce::jmax (0, preDelaySamples + shifterLatency - totalLatency); }
 
 private:

@@ -458,6 +458,17 @@ public:
         return recorder.arm (dir.getChildFile ("parts.wav"));
     }
 
+    /** Offline Choirize (chords from a MIDI file): a new take folder in the open group (a new group if none is
+        open), for a parts.wav written directly instead of recorded while the host plays. */
+    juce::File prepareOfflineTake()
+    {
+        enabled.store (false);
+        if (! isOpen()) newGroup ("Group " + juce::String (groupNames().size() + 1));
+        const auto dir = folder.getNonexistentChildFile ("Take " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S"), {}, false);
+        dir.createDirectory();
+        return dir;
+    }
+
     /** Call from a GUI timer: tracks each part's notes while recording; turns a finished recording into a take. True when a take was added. */
     bool pollArm (HarmonyExporter& recorder, const std::function<int (int part)>& voiceNote)
     {

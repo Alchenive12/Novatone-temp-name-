@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <array>
 #include <memory>
+#include <thread>
 #include "ModuleTabs.h"
 #include "../Harmony/HarmonyEngine.h"
 #include "../Harmony/HarmonyExporter.h"
@@ -31,6 +32,10 @@ public:
 
     /** "MIDI file" chord source: import + line up with the lead (hooks set by the editor). */
     ChordLane& getChordLane() noexcept { return chordLane; }
+
+    /** Offline Choirize for the MIDI file source (set by the editor): see NovaToneAudioProcessor::renderChoirPartsOffline. */
+    std::function<bool (const juce::File&, const std::vector<int>&, std::vector<int>&, std::vector<int>&, double&, juce::int64&,
+                        const std::function<bool (float)>&, juce::String&)> renderChoirOffline;
 
 private:
     void timerCallback() override;
@@ -132,6 +137,10 @@ private:
     RotaryKnob mixKnob, leadKnob, humanizeKnob;
     ChoiceSelector sourceSelector;
     ChordLane chordLane;
+    std::thread offlineThread;
+    std::atomic<float> offlineProgress { -1.0f };   // -1 = not rendering
+    std::atomic<bool>  offlineCancel { false };
+    void choirizeOffline (ChoirSession::PendingArm a);
     bool fileSource() const;
 
     juce::Rectangle<int> chordCard, keyboardCard, mixCard, helpArea;

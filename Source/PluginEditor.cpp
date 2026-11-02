@@ -457,6 +457,9 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
     lane.hooks.clear       = [&p] { p.clearHarmonyMidi(); };
     lane.hooks.track       = [&p] { return p.getHarmonyMidi(); };
     lane.hooks.publish     = [&p](std::shared_ptr<const MidiChordTrack> t) { p.setHarmonyMidi(std::move(t)); };
+    harmonyView.renderChoirOffline = [&p](const juce::File& f, const std::vector<int>& parts, std::vector<int>& lo, std::vector<int>& hi,
+                                          double& rate, juce::int64& start, const std::function<bool(float)>& progress, juce::String& err)
+    { return p.renderChoirPartsOffline(f, parts, lo, hi, rate, start, progress, err); };
     lane.hooks.positionPpq = [&p] { return p.getHarmonyPositionPpq(); };
     lane.hooks.moving      = [&p] { return p.isHarmonyPositionMoving(); };
     lane.hooks.leadNotes   = [this, &p]
