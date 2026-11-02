@@ -459,7 +459,9 @@ private:
     std::atomic<int>  activeHopBufferIdx { 0 };
     int               stagingHopBufferIdx = 1;
     bool              stagingHasAny       = false;
-    std::array<std::array<HopOverrideSlot, maxTimelineHops>, 2> hopOverrideBuffers {};
+    // Allocated at runtime: as a fixed std::array (2 x 65536 slots) MSVC ran out of heap compiling its initialiser.
+    std::array<std::vector<HopOverrideSlot>, 2> hopOverrideBuffers { std::vector<HopOverrideSlot> ((size_t) maxTimelineHops),
+                                                                     std::vector<HopOverrideSlot> ((size_t) maxTimelineHops) };
     std::array<LiveNoteOverride, maxPolyVoices> polyOverrides{};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PitchTraceQueue)

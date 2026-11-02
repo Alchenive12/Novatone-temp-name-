@@ -124,8 +124,9 @@ private:
     std::atomic<float>* harmMidiOffsetParam = nullptr;
 
     static constexpr int leadHistoryCap = 1 << 16;      // block-rate samples: ~11 min at 512-sample blocks
-    std::array<float, leadHistoryCap> leadHistoryPpq {}, leadHistoryMidi {};
-    std::array<float, leadHistoryCap> leadHistoryLen {};
+    std::vector<float> leadHistoryPpq = std::vector<float>((size_t) leadHistoryCap),
+                       leadHistoryMidi = std::vector<float>((size_t) leadHistoryCap),
+                       leadHistoryLen = std::vector<float>((size_t) leadHistoryCap);
     int leadHistoryWrite = 0;
     std::atomic<int> leadHistoryCount { 0 };
     std::atomic<bool> leadHistoryClear { false };
