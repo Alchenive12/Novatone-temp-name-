@@ -1064,11 +1064,12 @@ void NovaToneAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     state.removeChild(state.getChildWithName("HarmonyMidi"), nullptr);
-    if (const auto hm = getHarmonyMidi(); hm != nullptr && hm->fileData.getSize() > 0)
+    if (const auto hm = getHarmonyMidi(); hm != nullptr && ! hm->segments.empty())
     {
+        // the chords themselves (imported, then maybe edited / written in the chord editor)
         juce::ValueTree t("HarmonyMidi");
         t.setProperty("name", hm->fileName, nullptr);
-        t.setProperty("data", hm->fileData.toBase64Encoding(), nullptr);
+        t.setProperty("segments", hm->toString(), nullptr);
         state.appendChild(t, nullptr);
     }
     state.removeChild(state.getChildWithName("PolyClip"), nullptr);
@@ -1093,7 +1094,9 @@ void NovaToneAudioProcessor::setStateInformation(const void* data, int sizeInByt
         {
             std::shared_ptr<const MidiChordTrack> hm;
             juce::MemoryBlock mb;
-            if (midiTree.isValid() && mb.fromBase64Encoding(midiTree.getProperty("data").toString()))
+            if (midiTree.isValid() && midiTree.hasProperty("segments"))
+                hm = MidiChordTrack::fromString(midiTree.getProperty("segments").toString(), midiTree.getProperty("name").toString());
+            else if (midiTree.isValid() && mb.fromBase64Encoding(midiTree.getProperty("data").toString()))   // saved before the chord editor
             {
                 juce::String err;
                 hm = MidiChordTrack::fromData(mb, err);

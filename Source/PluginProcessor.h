@@ -106,6 +106,8 @@ public:
     // Harmony "MIDI file" source (message thread)
     bool loadHarmonyMidi(const juce::File& file, juce::String& error);
     void clearHarmonyMidi();
+    /** Chord write mode: replaces the chords with an edited copy. */
+    void setHarmonyMidi(std::shared_ptr<const MidiChordTrack>);
     std::shared_ptr<const MidiChordTrack> getHarmonyMidi() const;
     /** Song position (PPQ) the harmony chords are read at, before the offset (for the chord lane's playhead). */
     double getHarmonyPositionPpq() const noexcept { return harmonyPpq.load(std::memory_order_relaxed); }
@@ -115,7 +117,6 @@ public:
     void clearLeadHistory() noexcept { leadHistoryClear.store(true); }
 
 private:
-    void setHarmonyMidi(std::shared_ptr<const MidiChordTrack>);
     std::shared_ptr<const MidiChordTrack> harmonyMidi;   // message thread owns; audio reads under the lock
     juce::SpinLock harmonyMidiLock;
     std::atomic<double> harmonyPpq { 0.0 };

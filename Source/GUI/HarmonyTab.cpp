@@ -224,6 +224,7 @@ HarmonyTab::HarmonyTab (juce::AudioProcessorValueTreeState& s, const HarmonyEngi
       chordLane (s)
 {
     addChildComponent (chordLane);
+    chordLane.onExpandedChanged = [this] { resized(); repaint(); };
     mixKnob.setTooltipText ("Level of all harmony voices");
     leadKnob.setTooltipText ("Level of the lead vocal. All the way down = harmonies only (to print them on their own track)");
     humanizeKnob.setTooltipText ("Humanize: each voice gets its own small timing offset and pitch drift, like separate singers");
@@ -563,6 +564,7 @@ void HarmonyTab::paintKeyboardCard (juce::Graphics& g, juce::Rectangle<int> area
 
 bool HarmonyTab::fileSource() const
 {
+    // (the editor stays usable while expanded even if the source is switched away)
     return juce::roundToInt (apvts.getRawParameterValue ("harm_source")->load()) == 3;
 }
 
@@ -599,6 +601,13 @@ void HarmonyTab::resized()
         exportStatus = e;
     }
 
+    if (chordLane.isVisible() && chordLane.isExpanded())
+    {
+        // chord editor: covers the whole tab
+        chordLane.setBounds (getLocalBounds().reduced (8));
+        chordLane.toFront (false);
+        return;
+    }
     const int laneH = chordLane.isVisible() ? 118 : 0;
     auto top = r.removeFromTop (juce::jmax (150, r.getHeight() - 300 - (laneH > 0 ? laneH + 10 : 0)));
     if (laneH > 0)

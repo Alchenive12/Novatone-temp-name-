@@ -603,6 +603,73 @@ int main(int argc, char** argv)
         }
     }
 
+    if (argc > 8 && juce::String(argv[8]) == "chordedit")
+    {
+        juce::MidiMessageSequence seq;
+        const int chordsMidi[4][3] = { { 48, 52, 55 }, { 45, 48, 52 }, { 41, 45, 48 }, { 43, 47, 50 } };
+        for (int bar = 0; bar < 8; ++bar)
+            for (int n : chordsMidi[bar % 4])
+            { seq.addEvent(juce::MidiMessage::noteOn(1, n, (juce::uint8) 90), bar * 1920.0); seq.addEvent(juce::MidiMessage::noteOff(1, n), (bar + 1) * 1920.0 - 1.0); }
+        seq.updateMatchedPairs();
+        juce::MidiFile mf; mf.setTicksPerQuarterNote(480); mf.addTrack(seq);
+        const auto mid = outDir.getChildFile("chords.mid"); mid.deleteFile();
+        { juce::FileOutputStream os(mid); mf.writeTo(os); }
+        juce::String err; np->loadHarmonyMidi(mid, err);
+        for (auto [id, v] : { std::pair<const char*, float> { "harm_source", 3.0f }, { "harm_v1_on", 1.0f } })
+            if (auto* prm = np->apvts.getParameter(id)) prm->setValueNotifyingHost(prm->convertTo0to1(v));
+        std::unique_ptr<juce::AudioProcessorEditor> med(proc->createEditor());
+        med->setSize(w, h); med->setVisible(true);
+        std::function<void(juce::Component&)> show = [&](juce::Component& c)
+        { for (auto* ch : c.getChildren()) { if (dynamic_cast<HarmonyTab*>(ch) != nullptr) ch->setVisible(true); else if (dynamic_cast<TuneTab*>(ch) != nullptr) ch->setVisible(false); else show(*ch); } };
+        show(*med); pump(300);
+        std::function<ChordLane*(juce::Component&)> findLane = [&](juce::Component& c) -> ChordLane*
+        { if (auto* l = dynamic_cast<ChordLane*>(&c)) return l; for (auto* ch : c.getChildren()) if (auto* l = findLane(*ch)) return l; return nullptr; };
+        auto* lane = findLane(*med);
+        auto clickButton = [&](const juce::String& text) { for (auto* ch : lane->getChildren()) if (auto* b = dynamic_cast<juce::TextButton*>(ch); b != nullptr && b->getButtonText() == text) { b->triggerClick(); pump(100); return true; } return false; };
+        auto dump = [&](const char* label)
+        {
+            std::cout << label << ":";
+            for (auto& sg : np->getHarmonyMidi()->segments) if (sg.start >= 28) std::cout << " [" << sg.start << "-" << sg.end << " " << MidiChordTrack::chordName(sg.root, sg.quality) << "]";
+            std::cout << "\n";
+        };
+        // let the lane follow to the area after the file (song beats 32..)
+        playHead.pos = (juce::int64) (34 * 0.5 * 48000); playHead.playing = false; buf.clear(); proc->processBlock(buf, midi); pump(200);
+        clickButton("Expand");
+        std::cout << "expanded: " << lane->isExpanded() << " lane bounds " << lane->getBounds().toString() << "\n";
+        save(*med, outDir.getChildFile("chord_editor.png"), 1.0f);
+        clickButton("Write");
+        pump(200);
+        // geometry helpers via the lane's own mapping: find x of a song beat by scanning
+        auto xOfBeat = [&](double beat) { for (int x = 0; x < lane->getWidth(); ++x) { juce::MouseEvent* dummy = nullptr; (void) dummy; } return 0; };
+        (void) xOfBeat;
+        // drop an F chip at song beat 40 (lane maps x linearly; read it back from the view by probing chord row y)
+        const auto lb = lane->getLocalBounds();
+        const int rowY = 8 + 26 + 6 + 30 + 6 + 16;   // top bar, palette, then the chord row's middle
+        const int laneLeft = 12 + 38, laneW = lb.getWidth() - 24 - 38;
+        // the view starts at a bar boundary set by the follow logic; recover it from two probes is overkill: use known state
+        const double viewStart = 28.0, viewBeats = 32.0;   // followed to bar 8 before expanding
+        auto xFor = [&](double beat) { return (float) laneLeft + (float) ((beat - viewStart) / viewBeats) * (float) laneW; };
+        lane->itemDropped(juce::DragAndDropTarget::SourceDetails("chord:5:0", nullptr, { juce::roundToInt(xFor(40.1)), rowY }));
+        pump(100); dump("dropped F at beat 40");
+        auto src = juce::Desktop::getInstance().getMainMouseSource();
+        auto ev = [&](float x, float y, juce::ModifierKeys m, juce::Point<float> down, bool dragged)
+        { return juce::MouseEvent(src, { x, (float) y }, m, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, lane, lane, juce::Time::getCurrentTime(), down, juce::Time::getCurrentTime(), 1, dragged); };
+        const auto L = juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier);
+        { const juce::Point<float> d { xFor(41.5), (float) rowY }; lane->mouseDown(ev(d.x, d.y, L, d, false)); lane->mouseDrag(ev(xFor(45.5), d.y, L, d, true)); lane->mouseUp(ev(xFor(45.5), d.y, {}, d, true)); }
+        pump(100); dump("moved +4 beats");
+        { const juce::Point<float> d { xFor(48.0) - 2.0f, (float) rowY }; lane->mouseDown(ev(d.x, d.y, L, d, false)); lane->mouseDrag(ev(xFor(50.0), d.y, L, d, true)); lane->mouseUp(ev(xFor(50.0), d.y, {}, d, true)); }
+        pump(100); dump("stretched to beat 50");
+        lane->keyPressed(juce::KeyPress('z', juce::ModifierKeys::ctrlModifier, 0)); pump(100); dump("undo");
+        lane->keyPressed(juce::KeyPress('z', juce::ModifierKeys(juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::shiftModifier), 0)); pump(100); dump("redo");
+        // engine follows the written chord
+        playHead.pos = (juce::int64) (46.5 * 0.5 * 48000); playHead.playing = true; buf.clear(); proc->processBlock(buf, midi); playHead.playing = false;
+        std::cout << "chord at song beat 46.5: " << np->getHarmonyEngine().getChord() << " (F = " << 5 * ChordTracker::numQualities + 0 << ")\n";
+        save(*med, outDir.getChildFile("chord_editor_write.png"), 1.0f);
+        juce::MemoryBlock st; proc->getStateInformation(st); np->clearHarmonyMidi(); proc->setStateInformation(st.getData(), (int) st.getSize());
+        dump("after project reload");
+        med.reset(); proc->releaseResources(); return 0;
+    }
+
     if (argc > 8 && juce::String(argv[8]) == "export")
     {
         for (auto kv : juce::StringArray::fromTokens(juce::SystemStats::getEnvironmentVariable("TEST_PARAMS", ""), ",", ""))

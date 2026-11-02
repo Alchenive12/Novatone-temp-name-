@@ -28,6 +28,82 @@ struct MidiChordTrack
     juce::String fileName;
     juce::MemoryBlock fileData;            // original bytes, saved with the project
 
+    //==========================================================================
+    // Editing (chord write mode): edits make a modified copy, which is then published.
+
+    static Segment makeChord (int root, int quality, double start, double end)
+    {
+        Segment s; s.start = start; s.end = end; s.root = root; s.quality = quality; s.bass = root;
+        s.mask = ChordTracker::chordMask (root, quality);
+        return s;
+    }
+
+    /** Puts `seg` in, replacing whatever was under [seg.start, seg.end) (others are trimmed or split). */
+    void overwrite (const Segment& seg)
+    {
+        std::vector<Segment> out;
+        for (const auto& o : segments)
+        {
+            if (o.end <= seg.start || o.start >= seg.end) { out.push_back (o); continue; }
+            if (o.start < seg.start) { auto l = o; l.end = seg.start; out.push_back (l); }
+            if (o.end > seg.end)     { auto r = o; r.start = seg.end; out.push_back (r); }
+        }
+        out.push_back (seg);
+        std::sort (out.begin(), out.end(), [] (const Segment& a, const Segment& b) { return a.start < b.start; });
+        segments = std::move (out);
+        lengthPpq = segments.empty() ? 0.0 : segments.back().end;
+    }
+
+    void remove (size_t index)
+    {
+        if (index < segments.size()) segments.erase (segments.begin() + (std::ptrdiff_t) index);
+        lengthPpq = segments.empty() ? 0.0 : segments.back().end;
+    }
+
+    /** Index of the segment at `ppq` (file time), or -1. */
+    int indexAt (double ppq) const noexcept
+    {
+        for (size_t i = 0; i < segments.size(); ++i)
+            if (ppq >= segments[i].start && ppq < segments[i].end) return (int) i;
+        return -1;
+    }
+
+    /** Start of the first chord at or after `ppq`, or a large number. */
+    double nextStartAfter (double ppq) const noexcept
+    {
+        for (const auto& s : segments) if (s.start >= ppq - 1.0e-9) return s.start;
+        return 1.0e9;
+    }
+
+    //==========================================================================
+    // Saved with the project: "start,end,mask,root,quality,bass;..."
+    juce::String toString() const
+    {
+        juce::StringArray parts;
+        for (const auto& sg : segments)
+            parts.add (juce::String (sg.start, 4) + "," + juce::String (sg.end, 4) + "," + juce::String ((int) sg.mask) + ","
+                       + juce::String (sg.root) + "," + juce::String (sg.quality) + "," + juce::String (sg.bass));
+        return parts.joinIntoString (";");
+    }
+
+    static std::shared_ptr<const MidiChordTrack> fromString (const juce::String& text, const juce::String& name)
+    {
+        auto t = std::make_shared<MidiChordTrack>();
+        t->fileName = name;
+        for (const auto& part : juce::StringArray::fromTokens (text, ";", ""))
+        {
+            const auto f = juce::StringArray::fromTokens (part, ",", "");
+            if (f.size() < 6) continue;
+            Segment sg;
+            sg.start = f[0].getDoubleValue(); sg.end = f[1].getDoubleValue();
+            sg.mask = (uint16_t) f[2].getIntValue(); sg.root = f[3].getIntValue(); sg.quality = f[4].getIntValue(); sg.bass = f[5].getIntValue();
+            if (sg.end > sg.start && sg.mask != 0) t->segments.push_back (sg);
+        }
+        std::sort (t->segments.begin(), t->segments.end(), [] (const Segment& a, const Segment& b) { return a.start < b.start; });
+        t->lengthPpq = t->segments.empty() ? 0.0 : t->segments.back().end;
+        return t;
+    }
+
     /** Segment sounding at `ppq`, or nullptr (gap / outside the file). */
     const Segment* at (double ppq) const noexcept
     {

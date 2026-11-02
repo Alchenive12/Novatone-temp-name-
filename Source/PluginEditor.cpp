@@ -456,6 +456,7 @@ NovaToneAudioProcessorEditor::NovaToneAudioProcessorEditor(NovaToneAudioProcesso
     lane.hooks.load        = [&p](const juce::File& f, juce::String& err) { return p.loadHarmonyMidi(f, err); };
     lane.hooks.clear       = [&p] { p.clearHarmonyMidi(); };
     lane.hooks.track       = [&p] { return p.getHarmonyMidi(); };
+    lane.hooks.publish     = [&p](std::shared_ptr<const MidiChordTrack> t) { p.setHarmonyMidi(std::move(t)); };
     lane.hooks.positionPpq = [&p] { return p.getHarmonyPositionPpq(); };
     lane.hooks.moving      = [&p] { return p.isHarmonyPositionMoving(); };
     lane.hooks.leadNotes   = [this, &p]
