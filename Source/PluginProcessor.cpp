@@ -29,6 +29,7 @@ NovaToneAudioProcessor::NovaToneAudioProcessor()
     tuneSnapScaleParam      = apvts.getRawParameterValue("tune_snapScale");
     tuneAutoScrollParam     = apvts.getRawParameterValue("tune_autoScroll");
     tuneLookaheadParam      = apvts.getRawParameterValue("tune_lookahead");
+    tuneNaturalParam        = apvts.getRawParameterValue("tune_natural");
     tuneSyncParam           = apvts.getRawParameterValue("tune_sync");
     tuneSmoothParam         = apvts.getRawParameterValue("tune_smooth");
     tuneCharacterParam      = apvts.getRawParameterValue("tune_character");
@@ -137,7 +138,7 @@ void NovaToneAudioProcessor::parameterChanged(const juce::String& parameterID, f
     if (parameterID == "tune_variation")      pitchQueue.globalVariation.store(newValue, std::memory_order_relaxed);
     if (parameterID == "tune_humanizeAmount") pitchQueue.globalHumanizeAmount.store(newValue, std::memory_order_relaxed);
 
-    if (parameterID == "tune_smooth" || parameterID == "tune_lookahead")
+    if (parameterID == "tune_smooth" || parameterID == "tune_lookahead" || parameterID == "tune_natural")
     {
         syncRequested = true;
         triggerAsyncUpdate();
@@ -408,6 +409,7 @@ float NovaToneAudioProcessor::configureEngines(TuneEngine& te, AlterEngine& ae, 
     const bool  humanizeBtn = (humanizeAmt > 0.005f) || (load(tuneHumanizeButtonParam, 0.0f) > 0.5f);
     te.setHumanizeAmount(humanizeAmt);
     te.setHumanizeEnabled(humanizeBtn);
+    te.setNaturalEngine(load(tuneNaturalParam, 1.0f) > 0.5f);
     // Poly mode is clip-based now (Poly::ClipSession); the old real-time poly path stays off.
     te.setPolyphonicEnabled(false);
     te.setMidiCleanModeEnabled(load(tuneMidiCleanParam, 0.0f) > 0.5f);
@@ -1275,6 +1277,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::crea
     layout.add(std::make_unique<APB>("tune_polyphonic", "Polyphonic Mode", false));
     layout.add(std::make_unique<APB>("tune_midiClean",  "MIDI Clean Mode", false));
     layout.add(std::make_unique<APB>("tune_lookahead", "Lookahead", false));
+    layout.add(std::make_unique<APB>("tune_natural", "Natural Engine", true));
     layout.add(std::make_unique<APB>("tune_smooth",    "Smooth",    false));
     layout.add(std::make_unique<APB>("tune_sync",      "Sync",      false));
     layout.add(std::make_unique<APF>("tune_character", "Soft/Hard", NR(0.0f, 1.0f, 0.001f), TuneMacro::defaultCharacter, percentAttrs()));

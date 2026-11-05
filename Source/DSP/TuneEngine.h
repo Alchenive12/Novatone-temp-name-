@@ -7,6 +7,7 @@
 #include "Quantizer.h"
 #include "SmoothingFilter.h"
 #include "PsolaShifter.h"
+#include "SignalsmithShifter.h"
 #include "VibratoTracker.h"
 #include "SmoothPlanner.h"
 
@@ -194,6 +195,7 @@ public:
         const int correctionLag = windowSize / 2 + hopSize + alignTrimSamples;
         shifter.prepare(spec, correctionLag);
         shifter.setHumanizeMode(humanizeEnabled);
+        natural.prepare(spec);
 
         planner.prepare(hopSize, sampleRate);
         smoothDelaySamples = planner.getLookaheadSamples();
@@ -201,7 +203,7 @@ public:
         smoothRing.setSize(juce::jmax(1, static_cast<int> (spec.numChannels)), smoothRingSize);
 
         // Prepare Latency-Aligned Sub-Band Sibilant & Breath Crossover Ring (3.8 kHz TPT split):
-        const int maxTotalLatency = shifter.getLatencySamples() + smoothDelaySamples + static_cast<int>(subBlockSize) + 64;
+        const int maxTotalLatency = juce::jmax(shifter.getLatencySamples(), natural.getLatencySamples()) + smoothDelaySamples + static_cast<int>(subBlockSize) + 64;
         sibilantRingSize = juce::nextPowerOfTwo(juce::jmax(256, maxTotalLatency));
         sibilantRingMask = sibilantRingSize - 1;
         sibilantDryRing.setSize(juce::jmax(1, static_cast<int>(spec.numChannels)), sibilantRingSize);
@@ -265,6 +267,7 @@ public:
         quantizer.reset();
         smoother.reset();
         shifter.reset();
+        natural.reset();
         shifter.setHumanizeMode(humanizeEnabled);
 
         analysisBuffer.clear();
@@ -378,7 +381,8 @@ public:
         sibilantGainSmoothed.setTargetValue(targetSibGainLin);
 
         const int dryRingChans = juce::jmin(static_cast<int>(numCh), sibilantDryRing.getNumChannels());
-        const int shifterLatency = shifter.getLatencySamples();
+        const bool useNatural = naturalActive();
+        const int shifterLatency = useNatural ? natural.getLatencySamples() : shifter.getLatencySamples();
 
         for (size_t start = 0; start < numSmp; start += subBlockSize)
         {
@@ -439,7 +443,7 @@ public:
             if (smoothEnabled)
             {
                 delaySubBlock(sub);
-                const double grainTime = static_cast<double> (inputCounter - smoothDelaySamples - shifter.getAnalysisLatencySamples() - (hopSize / 2) + smoothTrimSamples);
+                const double grainTime = static_cast<double> (inputCounter - smoothDelaySamples - (useNatural ? natural.getAnalysisLatencySamples() : shifter.getAnalysisLatencySamples()) - (hopSize / 2) + smoothTrimSamples);
                 const float delayedHintHz = planner.pitchHintAt(static_cast<double> (inputCounter - smoothDelaySamples));
                 correction = (delayedHintHz <= 0.0f || isDryAt(grainTime)) ? 0.0f : planner.correctionAt(grainTime);
                 shifter.setPeriodHint(delayedHintHz);
@@ -470,7 +474,15 @@ public:
             shifter.setPitchSemitones(monoPsolaShift);
 
             juce::dsp::ProcessContextReplacing<float> subContext(sub);
-            shifter.process(subContext);
+            if (useNatural)
+            {
+                natural.setPitchSemitones(monoPsolaShift);
+                natural.process(subContext);
+            }
+            else
+            {
+                shifter.process(subContext);
+            }
 
             if (polyphonicEnabled)
             {
@@ -535,8 +547,16 @@ public:
 
     int getLatencySamplesFor(bool lookahead) const noexcept
     {
+        if (lookahead && naturalEngine)
+            return natural.getLatencySamples() + smoothDelaySamples;
         return shifter.getLatencySamples() + (lookahead ? smoothDelaySamples : 0);
     }
+
+    /** Natural engine: Signalsmith Stretch (spectral, formant-preserving) instead of TD-PSOLA.
+        Breath and noise stay noise instead of being chopped into the pitch period.
+        Mono + Lookahead only; otherwise TD-PSOLA. Costs ~100 ms more latency. */
+    void setNaturalEngine(bool on) noexcept { naturalEngine = on; }
+    bool naturalActive() const noexcept { return naturalEngine && smoothEnabled && ! polyphonicEnabled; }
 
     void setLookaheadEnabled(bool on) noexcept
     {
@@ -1378,6 +1398,8 @@ private:
     Quantizer        quantizer;
     SmoothingFilter  smoother;
     PsolaShifter     shifter;
+    SignalsmithShifter natural; // shortcut: switching engines mid-note can click once; no crossfade yet
+    bool naturalEngine = false;
     bool  overrideActive          = false;
     bool  overridePitchEdit       = true;   // false: gain/formant-only edit, pitch follows the global knobs
     float overrideTargetMidi      = 60.0f;

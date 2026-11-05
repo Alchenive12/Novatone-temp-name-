@@ -199,6 +199,7 @@ private:
     std::atomic<float>* tuneSnapScaleParam      = nullptr;
     std::atomic<float>* tuneAutoScrollParam     = nullptr;
     std::atomic<float>* tuneLookaheadParam      = nullptr;
+    std::atomic<float>* tuneNaturalParam        = nullptr;
     std::atomic<float>* tuneSyncParam           = nullptr;
     std::atomic<float>* tuneSmoothParam         = nullptr;
     std::atomic<float>* tuneCharacterParam      = nullptr;
