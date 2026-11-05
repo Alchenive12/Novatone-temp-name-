@@ -1,4 +1,4 @@
-<!-- File: prompts/01-argon-bug-review.md -->
+<!-- File: docs/prompts/01-argon-bug-review.md -->
 # Argon: bug review of NovaTone (co-worker method)
 
 Run in Antigravity with model **Argon**. One job: read the code, write ONE review file. Do NOT fix anything.

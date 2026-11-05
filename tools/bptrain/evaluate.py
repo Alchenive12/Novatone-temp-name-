@@ -41,7 +41,12 @@ class Model:
         T = int(len(audio) / HOP) + 1
         return {'note': np.concatenate(notes)[:T], 'onset': np.concatenate(onsets)[:T], 'contour': np.concatenate(conts)[:T]}
 
+# The test clips live once in tools/polytest; a copy next to this script (as the PC .bat jobs make) wins.
+TEST_CLIPS = {'test_piano.wav': 'wrld_midi2_flkeys.wav', 'test_guitar.wav': os.path.join('guitar', 'titan8.wav')}
+
 def load22(path):
+    if not os.path.exists(path) and os.path.basename(path) in TEST_CLIPS:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'polytest', TEST_CLIPS[os.path.basename(path)])
     x, sr = sf.read(path, dtype='float32'); x = x.mean(1) if x.ndim > 1 else x
     return sg.resample_poly(x, SR, sr).astype(np.float32) if sr != SR else x
 

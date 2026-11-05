@@ -2,6 +2,27 @@
 
 Melodyne-style vocal / instrument pitch editor — JUCE 8 VST3 + Standalone.
 
+## Repository layout
+```
+Source/            plugin code
+  PluginProcessor.*, PluginEditor.*, PresetManager.h
+  DSP/             pitch detection, correction, shifters (Tune / mono mode)
+  Poly/            clip-based poly mode: analyser, Basic Pitch port, renderer, session
+  Harmony/         chord tracking + harmony voice generation
+  Choir/           Choirize (AI-voice choir) session
+  GUI/             tabs, piano roll / pitch trace, colours
+Resources/Fonts/   Inter (embedded UI font)
+tools/             dev-only, never built in CI
+  PolyBench.cpp    poly engine benchmark   (-DNOVATONE_BUILD_TOOLS=ON)
+  Snapshot.cpp     renders the UI to PNG   (-DNOVATONE_BUILD_SNAPSHOT=ON)
+  polytest/        detection regression tests vs Melodyne (piano, guitar, mono)
+  bptrain/         Basic Pitch fine-tune scripts (run on the PC, co-worker method)
+  choir/           Choirize helper script
+docs/ui/           UI screenshots
+docs/prompts/      task briefs for Gemini / Argon in Antigravity
+```
+Changes under `docs/`, `tools/` and `*.md` don't trigger CI builds.
+
 ## Build
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

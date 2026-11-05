@@ -1,8 +1,8 @@
 # bptrain: Basic Pitch head fine-tune (2026-10-26 run)
 
 Frozen ONNX front end (CQT + harmonic stack) + trainable 6-conv head, written back into the stock ONNX.
-Run on the PC with `job.bat` (needs PY = python with CUDA torch, plus `nmp_stock.onnx`, `test_piano.wav`
-and `test_guitar.wav` from `tools/polytest`). Mix: 70% GuitarSet (player 05 held out), 30% synthetic.
+Run on the PC with `job.bat` (needs PY = python with CUDA torch, plus `nmp_stock.onnx`; the test clips are read from
+`tools/polytest` — `wrld_midi2_flkeys.wav` as piano, `guitar/titan8.wav` as guitar). Mix: 70% GuitarSet (player 05 held out), 30% synthetic.
 3 seeds x 3000 steps, batch 16, lr 1e-5. About 23 min per seed on the RTX.
 
 ## Result: no ship

@@ -1,17 +1,33 @@
+# Build output
 build/
+build-*/
 cmake-build-*/
+
+# IDE / OS
 .vs/
 .vscode/
 .idea/
 *.user
 .DS_Store
+Thumbs.db
 
-# poly test scratch output
-tools/polytest/__pycache__/
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Poly test scratch output
 tools/polytest/nt_out.txt
 tools/polytest/edit_*.wav
 tools/polytest/harmony_example.wav
 tools/polytest/guitar/nt.txt
 tools/polytest/mono/*.wav
 tools/polytest/mono/*.npy
-__pycache__/
+
+# Basic Pitch training runs (made on the PC by the .bat jobs)
+tools/bptrain/logs/
+tools/bptrain/runs/
+tools/bptrain/data/
+tools/bptrain/test_piano.wav
+tools/bptrain/test_guitar.wav
+tools/bptrain/*_compare.txt
