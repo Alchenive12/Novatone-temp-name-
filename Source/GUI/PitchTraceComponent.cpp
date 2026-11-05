@@ -3838,6 +3838,9 @@ void PitchTraceComponent::applyAutoGlide()
     const double rate = queue.monoPreview.clipRate > 0.0 ? queue.monoPreview.clipRate : 48000.0;
     const double hopMs = 1000.0 * juce::jmax(1, queue.monoPreview.hopSamples) / rate;
     const int maxGapHops = juce::roundToInt(60.0 / hopMs); // notes closer than 60 ms count as connected
+    const float transScale = (1.0f - queue.globalTransition.load(std::memory_order_relaxed)) * 1.15f;
+    if (transScale < 0.05f)
+        return; // Transition at max = hard steps; nothing to glide
 
     std::vector<size_t> order;
     for (size_t i = 0; i < notes.size(); ++i)
@@ -3853,10 +3856,16 @@ void PitchTraceComponent::applyAutoGlide()
         const float jump = std::abs(b.effectiveTargetMidi() - a.effectiveTargetMidi());
         if (jump < 0.5f)
             continue;
-        // Sung transitions run ~50 ms for a step up to ~170 ms for a big leap; half each side of the join.
-        const double halfHops = 0.5 * (30.0 + 20.0 * juce::jmin(jump, 7.0f)) / hopMs;
-        if (! a.rampManual) a.rampOutRatio = juce::jlimit(0.02f, 0.48f, (float) (halfHops / juce::jmax(1, a.endHop - a.startHop)));
-        if (! b.rampManual) b.rampInRatio  = juce::jlimit(0.02f, 0.48f, (float) (halfHops / juce::jmax(1, b.endHop - b.startHop)));
+        // Sung transitions: ~100 ms for a semitone up to ~190 ms for a 7+ semitone leap, half each side.
+        // Converted through the Transition knob's scale (as evaluateShapedMidiAtHop applies it), and
+        // never shorter than the default 18 % ramp.
+        const double halfHops = 0.5 * (100.0 + 15.0 * (juce::jmin(jump, 7.0f) - 1.0f)) / hopMs / transScale;
+        auto ratioFor = [halfHops](const NewtoneNoteBlock& nb)
+        {
+            return juce::jlimit(0.18f, 0.48f, (float) (halfHops / juce::jmax(1, nb.endHop - nb.startHop)));
+        };
+        if (! a.rampManual) a.rampOutRatio = ratioFor(a);
+        if (! b.rampManual) b.rampInRatio  = ratioFor(b);
     }
 }
 
