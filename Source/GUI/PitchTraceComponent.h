@@ -275,6 +275,10 @@ private:
     std::vector<TimelineHop> timeline;
     std::vector<NewtoneNoteBlock> notes;
     std::vector<ReferenceGhostNote> referenceGhostNotes;
+    bool autoGlideEnabled = true;
+    /** Auto Glide: after a pitch move, sizes the ramps between touching notes to the jump
+        (small step = short glide, big leap = longer). Hand-dragged ramps are kept. */
+    void applyAutoGlide();
     /** Undo state: the notes plus the freehand Draw curve (stored per hop on the timeline). */
     struct EditSnapshot
     {

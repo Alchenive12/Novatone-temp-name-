@@ -3767,6 +3767,7 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
                     continue;
                 const float baseR = hasSnapshot ? dragStartNotesSnapshot[i].rampInRatio : dragStartRampIn;
                 n.rampInRatio = juce::jlimit(0.02f, 0.48f, baseR + dx * 0.004f);
+                n.rampManual = true;
                 n.userEdited = true;
             }
             break;
@@ -3780,6 +3781,7 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
                     continue;
                 const float baseR = hasSnapshot ? dragStartNotesSnapshot[i].rampOutRatio : dragStartRampOut;
                 n.rampOutRatio = juce::jlimit(0.02f, 0.48f, baseR - dx * 0.004f);
+                n.rampManual = true;
                 n.userEdited = true;
             }
             break;
@@ -3821,7 +3823,41 @@ void PitchTraceComponent::mouseDrag(const juce::MouseEvent& e)
 
 void PitchTraceComponent::mouseUp(const juce::MouseEvent&)
 {
+    const bool movedPitch = currentDragAction == DragAction::MoveNotePitch;
     currentDragAction = DragAction::None;
+    if (movedPitch && autoGlideEnabled)
+    {
+        applyAutoGlide();
+        syncActiveOverrideToEngine();
+        repaint();
+    }
+}
+
+void PitchTraceComponent::applyAutoGlide()
+{
+    const double rate = queue.monoPreview.clipRate > 0.0 ? queue.monoPreview.clipRate : 48000.0;
+    const double hopMs = 1000.0 * juce::jmax(1, queue.monoPreview.hopSamples) / rate;
+    const int maxGapHops = juce::roundToInt(60.0 / hopMs); // notes closer than 60 ms count as connected
+
+    std::vector<size_t> order;
+    for (size_t i = 0; i < notes.size(); ++i)
+        if (! notes[i].isSibilant) order.push_back(i);
+    std::sort(order.begin(), order.end(), [this](size_t a, size_t b) { return notes[a].startHop < notes[b].startHop; });
+
+    for (size_t k = 1; k < order.size(); ++k)
+    {
+        auto& a = notes[order[k - 1]];
+        auto& b = notes[order[k]];
+        if (! (a.pitchEdited || b.pitchEdited) || b.startHop - a.endHop > maxGapHops)
+            continue;
+        const float jump = std::abs(b.effectiveTargetMidi() - a.effectiveTargetMidi());
+        if (jump < 0.5f)
+            continue;
+        // Sung transitions run ~50 ms for a step up to ~170 ms for a big leap; half each side of the join.
+        const double halfHops = 0.5 * (30.0 + 20.0 * juce::jmin(jump, 7.0f)) / hopMs;
+        if (! a.rampManual) a.rampOutRatio = juce::jlimit(0.02f, 0.48f, (float) (halfHops / juce::jmax(1, a.endHop - a.startHop)));
+        if (! b.rampManual) b.rampInRatio  = juce::jlimit(0.02f, 0.48f, (float) (halfHops / juce::jmax(1, b.endHop - b.startHop)));
+    }
 }
 
 void PitchTraceComponent::mouseDoubleClick(const juce::MouseEvent& e)

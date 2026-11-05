@@ -45,6 +45,7 @@ struct NewtoneNoteBlock
     bool  isSibilant       = false;  ///< True if this block represents a protected unvoiced consonant.
     bool  userEdited       = false;  ///< True once manually edited by the user in the Piano Roll.
     bool  pitchEdited      = false;  ///< Pitch / cents / curve changed by the user (gain-only edits like Level leave it false).
+    bool  rampManual       = false;  ///< Ramp In/Out dragged by hand: Auto Glide leaves it alone.
     bool  selected         = false;  ///< GUI selection state (Ctrl+A / Ctrl+Click).
 
     float effectiveTargetMidi() const noexcept
