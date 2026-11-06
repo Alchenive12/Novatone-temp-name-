@@ -23,6 +23,12 @@ Harness: `tools/abtest` (offline, Linux; `cmake -S tools/abtest -B build-ab && c
 - First version made glides shorter than default (Transition knob scales ramps afterwards) — fixed in f23e9e0.
 - CI Linux + Windows pass. **Not yet tested in FL / standalone by ear.**
 
+## PC test attempt (Nov 6, remote)
+- Manual Windows build (run 42107742994) put in `E:\Fl studio 2023 - 2024 projects\yudy groovy\_novatone_test\` (Standalone exe + VST3 bundle).
+- Standalone runs, but computer use can't be granted to a non-installed exe, so it can't be driven remotely.
+- Gemini installed the VST3 to `%LOCALAPPDATA%\Programs\Common\VST3\NovaTone.vst3` (no admin for Common Files). The older NovaTone in `C:\Program Files\Common Files\VST3` is untouched and has the same plugin ID, so FL will likely load the old one.
+- To test at home: double-click the exe in `_novatone_test`, or build `feature/auto-glide` locally (VS, x64 Release) so it replaces the Common Files copy.
+
 ## Open
 - Ear test of Auto Glide in the plugin.
 - UI toggle for Auto Glide.
