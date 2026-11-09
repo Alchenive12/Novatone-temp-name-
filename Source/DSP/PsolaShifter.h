@@ -38,6 +38,8 @@ public:
         inputRing.setSize(numChannels, ringSize);
         outputRing.setSize(numChannels, ringSize);
         monoRing.assign(static_cast<size_t> (ringSize), 0.0f);
+        voicedRing.assign(static_cast<size_t> (ringSize), 0);
+        unvoicedFadeAlpha = static_cast<float> (1.0 - std::exp(-1.0 / (sampleRate * 0.004)));
 
         fastRatioSmoothAlpha  = 1.0 - std::exp(-1.0 / (sampleRate * 0.0025));
         humanRatioSmoothAlpha = 1.0 - std::exp(-1.0 / (sampleRate * 0.0028));
@@ -51,6 +53,8 @@ public:
         inputRing.clear();
         outputRing.clear();
         std::fill(monoRing.begin(), monoRing.end(), 0.0f);
+        std::fill(voicedRing.begin(), voicedRing.end(), static_cast<uint8_t> (0));
+        unvoicedMix = 1.0f;
         written = 0;
         markCount = 0;
         lastGrain = -1;
@@ -96,6 +100,7 @@ public:
                 mono += x;
             }
             monoRing[static_cast<size_t> (w)] = mono * channelScale;
+            voicedRing[static_cast<size_t> (w)] = hintHz > 0.0f ? 1 : 0;
             ++written;
 
             placeMarks();
@@ -105,11 +110,20 @@ public:
             passthroughMix += 0.004f * (targetPass - passthroughMix);
 
             const int r = static_cast<int> ((written - 1 - latency) & ringMask);
+
+            // Unvoiced bypass: breaths, "s"/"sh"/"t" and other unpitched audio have no periods to
+            // shift, and resynthesising them from fixed 200 Hz grains adds a tonal buzz. Play them
+            // dry (latency-aligned, so it is the exact input) with a ~4 ms crossfade. The voicing
+            // flag is read where the grains for this output sample were planned (r + synthesisLag).
+            const bool voicedHere = voicedRing[static_cast<size_t> ((r + synthesisLag) & ringMask)] != 0;
+            unvoicedMix += unvoicedFadeAlpha * ((voicedHere ? 0.0f : 1.0f) - unvoicedMix);
+            const float dryMix = juce::jmax(passthroughMix, unvoicedMix);
+
             for (int ch = 0; ch < chans; ++ch)
             {
                 const float psolaOut = outputRing.getSample(ch, r);
                 const float exactDry = inputRing.getSample(ch, r);
-                block.setSample(ch, i, psolaOut + passthroughMix * (exactDry - psolaOut));
+                block.setSample(ch, i, psolaOut + dryMix * (exactDry - psolaOut));
                 outputRing.setSample(ch, r, 0.0f);
             }
         }
@@ -217,9 +231,16 @@ private:
             double pos;
             if (lastGrain < 0)
             {
-                if (markCount < 3)
+                // Start on the newest mark that is already behind the synthesis frontier. (Taking
+                // a fixed "3 marks back" never got there when 2 periods + maxPeriod < synthesisLag,
+                // i.e. for voices above ~160 Hz at 44.1 kHz, so the shifter stayed silent until
+                // it happened to hear a low note.)
+                int64_t k0 = markCount - 2;
+                while (k0 >= std::max<int64_t> (1, minValidMark) && mark(k0) > frontier)
+                    --k0;
+                if (k0 < std::max<int64_t> (1, minValidMark))
                     return;
-                pos = mark(std::max<int64_t> (1, markCount - 3));
+                pos = mark(k0);
             }
             else
             {
@@ -251,9 +272,8 @@ private:
         const double rawLeft  = juce::jmax(2.0, centre - mark(k - 1));
         const double rawRight = juce::jmax(2.0, mark(k + 1) - centre);
 
-        const float ampNorm = (smoothedRatio > 1.02)
-            ? static_cast<float>(1.0 / std::pow(smoothedRatio, 0.65))
-            : 1.0f;
+        // Continuous in the ratio (the old `> 1.02` switch made a small level step at ~+34 cents).
+        const float ampNorm = static_cast<float>(1.0 / std::pow(juce::jmax(1.0, smoothedRatio), 0.65));
 
         const double left  = rawLeft;
         const double right = rawRight;
@@ -305,6 +325,9 @@ private:
 
     juce::AudioBuffer<float> inputRing, outputRing;
     std::vector<float> monoRing;
+    std::vector<uint8_t> voicedRing;
+    float unvoicedMix = 1.0f;
+    float unvoicedFadeAlpha = 0.005f;
 
     int64_t written = 0;
     std::array<double, markRingSize> marks {};
