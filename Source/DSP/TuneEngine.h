@@ -1050,9 +1050,17 @@ private:
         const float rawVibDev = detectedMidi - centre;
         const float nonVibScale = 0.28f + 0.12f * hGate + 0.18f * hExtreme;
         const float nonVibLimit = 0.12f + 0.04f * hGate + 0.08f * hExtreme;
-        const float vibDeviation = hasTrueVibrato
+        const float squashedVibDev = hasTrueVibrato
             ? juce::jlimit(-0.35f - 0.15f * hExtreme, 0.35f + 0.15f * hExtreme, rawVibDev)
             : juce::jlimit(-nonVibLimit, nonVibLimit, nonVibScale * rawVibDev);
+
+        // "Natural" share of Variation (0 at 0%, 1 at >= 100%). At 100% a moved note keeps the
+        // singer's own micro-pitch around the new centre (shift the note, don't flatten it): the
+        // squash/clamp above used to throw away ~70% of it, which is what made moved notes sound
+        // robotic. Below 100% it blends back to the old flattening, so low Variation still tightens.
+        const float naturalShare = juce::jlimit(0.0f, 1.0f, smoothedVariationAmount * noteVarMult);
+        const float vibDeviation = squashedVibDev
+            + naturalShare * (juce::jlimit(-naturalDevLimit, naturalDevLimit, rawVibDev) - squashedVibDev);
 
         const float slowDriftDev = juce::jlimit(-0.45f, 0.45f, slowDriftMidi - perceptualNoteAnchorMidi);
 
@@ -1143,7 +1151,12 @@ private:
             }
         }
 
-        float shapedDeviation = juce::jlimit(-0.42f, 0.42f, effVar * intentSlopeScale * vibDeviation + entryScoopVariation);
+        // At natural Variation the singer's own deviation passes 1:1 (no intent-slope reshaping,
+        // no +-0.42 st clamp); lower Variation keeps the old shaped response.
+        const float shapedLimit = 0.42f + naturalShare * (naturalDevLimit - 0.42f);
+        const float slopeForDev = intentSlopeScale + naturalShare * (1.0f - intentSlopeScale);
+        const float varForDev   = effVar + naturalShare * (juce::jmax(1.0f, rawVar) - effVar);
+        float shapedDeviation = juce::jlimit(-shapedLimit, shapedLimit, varForDev * slopeForDev * vibDeviation + entryScoopVariation);
 
         if (heldGain > 0.0f && vibratoDepthSemitones > 0.0f && effVar > 0.01f && effVar < 1.0f)
         {
@@ -1172,7 +1185,10 @@ private:
                 : 0.0f;
             const float gentleVib  = 0.032f * bloomEnv * std::sin(humanizeVibPhase);
 
-            const float driftScale = hGate + 0.75f * hExtreme;
+            // Synthetic wobble only stands in for expression that was flattened away; at natural
+            // Variation the singer's real drift/vibrato is kept, so adding sine LFOs on top
+            // would just be fake vibrato.
+            const float driftScale = (hGate + 0.75f * hExtreme) * (1.0f - naturalShare);
             organicMicroDrift = driftScale * intentSlopeScale * (larynDrift + gentleVib);
         }
 
@@ -1325,6 +1341,7 @@ private:
     static constexpr size_t subBlockSize = 16;
     static constexpr double minDetectHz = 60.0;
     static constexpr int    unvoicedHopsBeforeRelease = 10;
+    static constexpr float  naturalDevLimit = 1.2f; // st: beyond this it is another note, not expression
     static constexpr float  maxJumpSemitones = 7.0f;
     static constexpr float  pendingJumpToleranceSemitones = 2.5f;
     static constexpr float  vibratoCentreTauSeconds = 0.150f;
