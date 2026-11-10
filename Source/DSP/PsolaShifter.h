@@ -40,6 +40,7 @@ public:
         monoRing.assign(static_cast<size_t> (ringSize), 0.0f);
         voicedRing.assign(static_cast<size_t> (ringSize), 0);
         unvoicedFadeAlpha = static_cast<float> (1.0 - std::exp(-1.0 / (sampleRate * 0.004)));
+        levelAlpha = static_cast<float> (1.0 - std::exp(-1.0 / (sampleRate * 0.030)));
 
         fastRatioSmoothAlpha  = 1.0 - std::exp(-1.0 / (sampleRate * 0.0025));
         humanRatioSmoothAlpha = 1.0 - std::exp(-1.0 / (sampleRate * 0.0028));
@@ -55,6 +56,8 @@ public:
         std::fill(monoRing.begin(), monoRing.end(), 0.0f);
         std::fill(voicedRing.begin(), voicedRing.end(), static_cast<uint8_t> (0));
         unvoicedMix = 1.0f;
+        dryPower = wetPower = 0.0f;
+        levelGain = 1.0f;
         written = 0;
         markCount = 0;
         lastGrain = -1;
@@ -119,9 +122,25 @@ public:
             unvoicedMix += unvoicedFadeAlpha * ((voicedHere ? 0.0f : 1.0f) - unvoicedMix);
             const float dryMix = juce::jmax(passthroughMix, unvoicedMix);
 
+            // Level match: a shifted note must stay as loud as it was sung (it lost ~2 dB at +3 st,
+            // and more further out, in both directions). Follow the short-term power of the dry
+            // input and of the PSOLA output at the same instant and scale the output to match.
+            float dryPow = 0.0f, wetPow = 0.0f;
             for (int ch = 0; ch < chans; ++ch)
             {
-                const float psolaOut = outputRing.getSample(ch, r);
+                const float d = inputRing.getSample(ch, r), w = outputRing.getSample(ch, r);
+                dryPow += d * d;
+                wetPow += w * w;
+            }
+            dryPower += levelAlpha * (dryPow - dryPower);
+            wetPower += levelAlpha * (wetPow - wetPower);
+            const float wantGain = (dryPower > 1.0e-9f && wetPower > 1.0e-9f)
+                ? juce::jlimit(0.7f, 1.6f, std::sqrt(dryPower / wetPower)) : 1.0f;
+            levelGain += levelAlpha * (wantGain - levelGain);
+
+            for (int ch = 0; ch < chans; ++ch)
+            {
+                const float psolaOut = levelGain * outputRing.getSample(ch, r);
                 const float exactDry = inputRing.getSample(ch, r);
                 block.setSample(ch, i, psolaOut + dryMix * (exactDry - psolaOut));
                 outputRing.setSample(ch, r, 0.0f);
@@ -328,6 +347,7 @@ private:
     std::vector<uint8_t> voicedRing;
     float unvoicedMix = 1.0f;
     float unvoicedFadeAlpha = 0.005f;
+    float levelAlpha = 0.001f, dryPower = 0.0f, wetPower = 0.0f, levelGain = 1.0f;
 
     int64_t written = 0;
     std::array<double, markRingSize> marks {};

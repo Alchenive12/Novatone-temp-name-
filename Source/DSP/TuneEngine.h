@@ -122,8 +122,12 @@ public:
                              float noteVariation, float gainDb, float rampIn,
                              float sibilantDb = 0.0f, bool hasCustomPitch = false,
                              float customPitchMidi = 60.0f, float fadeMultiplier = 1.0f,
-                             float rampOut = 0.18f) noexcept
+                             float rampOut = 0.18f, bool hasShift = false,
+                             float shiftSemitones = 0.0f, float sungMidi = 60.0f) noexcept
     {
+        overrideHasShift        = hasShift;
+        overrideShiftSemitones  = shiftSemitones;
+        overrideSungMidi        = sungMidi;
         overrideActive          = active;
         overrideTargetMidi      = targetMidi;
         overrideCenter          = noteCenter;
@@ -638,6 +642,8 @@ public:
     bool  isVoiced()              const noexcept { return currentlyVoiced; }
     bool  isSibilant()            const noexcept { return currentlySibilant; }
     int   getCurrentHopIndex()    const noexcept { return hopCounter; }
+    /** The pitch frame being corrected is centred this many samples before the newest input. */
+    int   getPitchAnalysisDelaySamples() const noexcept { return windowSize / 2; }
     float getAppliedCorrectionSemitones() const noexcept { return appliedCorrection; }
 
 private:
@@ -738,11 +744,34 @@ private:
         const bool fricativeFrame = hasEnergy && (zcr > 0.14f || (zcr > 0.09f && rawMpm.pitchHz > 370.0f && rawMpm.clarity < 0.85f));
 
         MPMResult mpmRes = (hasEnergy && !fricativeFrame) ? trackPitch(rawMpm) : MPMResult{};
+
+        // Inside a moved roll note the roll already knows which note this is. When the tracker has
+        // no pitch (a voiced consonant trips the fricative gate) or is still on something far away
+        // (the previous note, a harmonic), but a clear pitch sits near the note's sung centre, use
+        // that. Otherwise those 20-50 ms pass dry or mis-shifted: with a 3 st move, an audible blip.
+        bool rollGuided = false;
+        if (hasEnergy && overrideActive && overrideHasShift
+            && (! mpmRes.isVoiced || std::abs(Quantizer::hzToMidi(mpmRes.pitchHz) - overrideSungMidi) > rollNoteRangeSemitones))
+        {
+            float bestClarity = rollNoteMinClarity;
+            for (int i = 0; i < detector.getNumCandidates(); ++i)
+            {
+                const auto& c = detector.getCandidate(i);
+                if (c.clarity >= bestClarity && c.pitchHz >= activeMinVoiceHz && c.pitchHz <= activeMaxVoiceHz
+                    && std::abs(Quantizer::hzToMidi(c.pitchHz) - overrideSungMidi) < rollNoteRangeSemitones)
+                {
+                    bestClarity = c.clarity;
+                    mpmRes = c;
+                    rollGuided = true;
+                }
+            }
+        }
+
         const bool voicedNow = mpmRes.isVoiced;
         if (voicedNow && useFineWindow)
             refinePitch(mpmRes, readPtr);
 
-        currentlySibilant = (fricativeFrame || (!voicedNow && hasEnergy && zcr > 0.12f));
+        currentlySibilant = ((fricativeFrame && ! rollGuided) || (!voicedNow && hasEnergy && zcr > 0.12f));
 
         if (! voicedNow)
         {
@@ -777,10 +806,18 @@ private:
         // Harmonic Octave Guard: if an active Piano Roll note override (or Tenor/Bass range lock)
         // shows `detectedMidi` is ~1 octave (+12 st) above the fundamental target, fold to f0
         // so the engine never mistakes a 2nd harmonic for an 11-semitone pitch error!
-        if (overrideActive && (detectedMidi - overrideTargetMidi) > 7.5f && (detectedMidi - overrideTargetMidi) < 16.5f)
+        // With a roll note's sung centre known, fold towards it in both directions: an octave-low
+        // read makes PSOLA cut two-period grains, and shifting those growls an octave down ("monster").
+        const float octaveRefMidi = overrideHasShift ? overrideSungMidi : overrideTargetMidi;
+        if (overrideActive && (detectedMidi - octaveRefMidi) > 7.5f && (detectedMidi - octaveRefMidi) < 16.5f)
         {
             detectedMidi   -= 12.0f;
             mpmRes.pitchHz *= 0.5f;
+        }
+        else if (overrideActive && overrideHasShift && (octaveRefMidi - detectedMidi) > 7.5f && (octaveRefMidi - detectedMidi) < 16.5f)
+        {
+            detectedMidi   += 12.0f;
+            mpmRes.pitchHz *= 2.0f;
         }
         else if (vocalRangeMode == 3 && inNote && detectedMidi > 59.5f && (detectedMidi - vibratoCentreMidi) > 6.5f)
         {
@@ -788,7 +825,7 @@ private:
             mpmRes.pitchHz *= 0.5f;
         }
 
-        if (inNote && std::abs(detectedMidi - lastDetectedMidi) > maxJumpSemitones
+        if (inNote && ! rollGuided && std::abs(detectedMidi - lastDetectedMidi) > maxJumpSemitones
             && (! jumpPending || std::abs(detectedMidi - pendingJumpMidi) > pendingJumpToleranceSemitones))
         {
             jumpPending = true;
@@ -950,6 +987,25 @@ private:
             return resolveFundamental(pick);
         }
 
+        // A note that starts breathy can lock an octave low (the double period is just as
+        // periodic) and continuity then holds it there for the whole phrase. A clean voice is as
+        // periodic at its true period as at twice it, so once the octave above is equally clear,
+        // that is the real pitch; a genuinely doubled (creaky) voice is clearly less so and stays.
+        auto escapeSubOctave = [&](const MPMResult& r) noexcept -> MPMResult
+        {
+            if (! r.isVoiced)
+                return r;
+            const float rMidi = Quantizer::hzToMidi(r.pitchHz);
+            for (int i = 0; i < detector.getNumCandidates(); ++i)
+            {
+                const auto& c = detector.getCandidate(i);
+                if (inRange(c.pitchHz) && c.clarity >= 0.90f && c.clarity >= r.clarity - 0.03f
+                    && std::abs(Quantizer::hzToMidi(c.pitchHz) - rMidi - 12.0f) < 0.6f)
+                    return c;
+            }
+            return r;
+        };
+
         int best = -1;
         float bestClarity = 0.0f;
         for (int i = 0; i < detector.getNumCandidates(); ++i)
@@ -974,10 +1030,10 @@ private:
             const float margin = (near(12.0f) || near(19.0f) || near(24.0f)) ? p.octaveMargin
                                : (near(-12.0f) || near(-19.0f) || near(-24.0f)) ? p.octaveMarginDown : -1.0f;
             if (margin >= 0.0f && best >= 0 && bestClarity >= resolvedPick.clarity - margin)
-                return detector.getCandidate(best);
-            return resolvedPick;
+                return escapeSubOctave(detector.getCandidate(best));
+            return escapeSubOctave(resolvedPick);
         }
-        return best >= 0 ? detector.getCandidate(best) : MPMResult{};
+        return best >= 0 ? escapeSubOctave(detector.getCandidate(best)) : MPMResult{};
     }
 
     void refinePitch(MPMResult& res, const float* frame) noexcept
@@ -1194,6 +1250,7 @@ private:
 
         float desiredMidi = activeCentreMidi + shapedDeviation + organicMicroDrift;
 
+
         // 5. Quintic Phrase-Onset Scoop Preservation (only when Humanize is OFF and Transition is slow;
         //    when Humanize is ON, `entryScoopVariation` already projects the scoop directly around `activeCentreMidi`!):
         if (! ablateNoOnsetGate && hGate <= 0.01f && transitionAmount < 0.90f && hopsSincePhraseOnset < 5)
@@ -1216,6 +1273,21 @@ private:
             const float tailGate = juce::jmax(hGate, overrideActive ? juce::jlimit(0.0f, 1.0f, (overrideRampOut - 0.18f) * 3.0f) : 0.0f);
             const float blend = 1.0f - tailGate * (1.0f - clarityWeight);
             desiredMidi = detectedMidi + blend * (desiredMidi - detectedMidi);
+        }
+
+        // Moved piano-roll note at natural Variation: play what the singer sang, shifted by the
+        // roll's own glided shift curve (whole-note centre, known offline), instead of chasing a
+        // running centre that flattens the scoop into the note and redraws the slide between
+        // notes. Lower Variation blends back to the shaped response above. The per-note Center is
+        // already in the curve; the global Center knob scales it here (without Humanize's 6%
+        // loosening: a note the user placed by hand should land where they put it).
+        // Only while the live pitch agrees with the roll's note; otherwise the old response stands.
+        // Applied last: the onset ramp and breathy-tail release above let go of the correction at
+        // quiet note starts and ends, which for a moved note is a pitch droop of the whole move.
+        if (overrideActive && overrideHasShift && std::abs(detectedMidi - overrideSungMidi) < 7.5f)
+        {
+            const float globalCenter = juce::jlimit(0.0f, 1.0f, smoothedCenterAmount);
+            desiredMidi += naturalShare * (detectedMidi + globalCenter * overrideShiftSemitones - desiredMidi);
         }
 
         return desiredMidi;
@@ -1343,6 +1415,8 @@ private:
     static constexpr int    unvoicedHopsBeforeRelease = 10;
     static constexpr float  naturalDevLimit = 1.2f; // st: beyond this it is another note, not expression
     static constexpr float  maxJumpSemitones = 7.0f;
+    static constexpr float  rollNoteMinClarity = 0.45f;      // a roll-guided pitch must be at least this clear (0.38 let one growl through)
+    static constexpr float  rollNoteRangeSemitones = 4.0f;   // and this close to the roll note's sung centre
     static constexpr float  pendingJumpToleranceSemitones = 2.5f;
     static constexpr float  vibratoCentreTauSeconds = 0.150f;
     float maxDeadbandSemitones = 0.03f;
@@ -1374,6 +1448,9 @@ private:
     float overrideFadeMultiplier  = 1.0f;
     bool  overrideHasCustomPitch  = false;
     float overrideCustomPitchMidi = 60.0f;
+    bool  overrideHasShift        = false;  ///< piano-roll note: follow the shift curve (see ShiftGlide.h)
+    float overrideShiftSemitones  = 0.0f;
+    float overrideSungMidi        = 60.0f;  ///< the note's sung centre as the piano roll analysed it
 
     // Live MIDI Target Note state:
     int      midiTargetNote = -1;

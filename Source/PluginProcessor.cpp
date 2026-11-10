@@ -195,7 +195,6 @@ void NovaToneAudioProcessor::applySyncMacro()
     setParameterFromMessageThread("tune_center",         knobs.center);
     setParameterFromMessageThread("tune_variation",      knobs.variation);
     setParameterFromMessageThread("tune_transition",     knobs.transition);
-    setParameterFromMessageThread("tune_sensitivity",    knobs.sensitivity);
 }
 
 bool NovaToneAudioProcessor::smoothRequested() const noexcept
@@ -392,7 +391,7 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
     const float center      = load(tuneCenterParam,      0.85f);
     const float variation   = load(tuneVariationParam,   1.00f);
     const float transition  = load(tuneTransitionParam,  load(tuneFlexAmountParam, 0.65f));
-    const float sensitivity = load(tuneSensitivityParam, 0.65f);
+    const float sensitivity = TuneMacro::sensitivityForNoteSplit(load(tuneSensitivityParam, 0.5f));
     const float vibrato     = load(tuneVibratoParam,     0.0f);
     const float globalForm  = load(alterFormantParam,    0.0f);
     const uint16_t scaleMask = packScaleDegreeMask();
@@ -438,7 +437,14 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
 
     float extraNoteFormant = 0.0f;
     const int playHop = pitchQueue.currentPlayheadHop.load(std::memory_order_relaxed);
-    const int engineHop = (playHop > 0) ? playHop : (tuneEngine.getCurrentHopIndex() % PitchTraceQueue::maxTimelineHops);
+    // The engine corrects audio it heard half an analysis window ago, so read the note that was
+    // under the playhead then (otherwise each note's end got the next note's pitch). This lookup
+    // serves the whole block, so aim at the block's middle. Measured on a real vocal: at 512-sample
+    // blocks one roll hop back balances note starts and ends; two is late, none is early.
+    // shortcut: assumes the clip rate equals the host rate; convert if clips of another rate drift.
+    const int lookbackHops = juce::jmax(0, tuneEngine.getPitchAnalysisDelaySamples() - currentBlockSamples / 2)
+                           / juce::jmax(1, pitchQueue.monoPreview.hopSamples);
+    const int engineHop = (playHop > 0) ? juce::jmax(0, playHop - lookbackHops) : (tuneEngine.getCurrentHopIndex() % PitchTraceQueue::maxTimelineHops);
     PitchTraceQueue::HopOverrideSlot hopSlot {};
 
     const auto& ov = pitchQueue.getLiveOverride();
@@ -457,7 +463,10 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
             hopSlot.hasCustomPitch,
             hopSlot.customPitchMidi,
             hopSlot.fadeMultiplier,
-            hopSlot.rampOutRatio);
+            hopSlot.rampOutRatio,
+            true,
+            hopSlot.shiftSemitones,
+            hopSlot.sungMidi);
     }
     else if (ovActive)
     {
@@ -740,6 +749,7 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
 
     captureMonoTake(buffer, hostSample, hostPlaying);   // raw input, before the preview replaces it
     renderMonoPreview(buffer, hostSample, hostPlaying);
+    currentBlockSamples = buffer.getNumSamples();
     pushParametersToEngines();
 
     juce::dsp::AudioBlock<float> block(buffer);
@@ -992,7 +1002,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::crea
     layout.add(std::make_unique<APF>("tune_center",      "Center",      NR(0.0f, 1.0f, 0.001f), startKnobs.center,      percentAttrs()));
     layout.add(std::make_unique<APF>("tune_variation",   "Variation",   NR(0.0f, 2.0f, 0.001f), startKnobs.variation,   percentAttrs()));
     layout.add(std::make_unique<APF>("tune_transition",  "Transition",  NR(0.0f, 1.0f, 0.001f), startKnobs.transition,  percentAttrs()));
-    layout.add(std::make_unique<APF>("tune_sensitivity", "Sensitivity", NR(0.0f, 1.0f, 0.001f), startKnobs.sensitivity, percentAttrs()));
+    layout.add(std::make_unique<APF>("tune_sensitivity", "Note Split", NR(0.0f, 1.0f, 0.25f), startKnobs.sensitivity,
+        juce::AudioParameterFloatAttributes()
+            .withStringFromValueFunction([](float v, int) { return juce::String(TuneMacro::noteSplitModeNames[TuneMacro::noteSplitMode(v)]); })
+            .withValueFromStringFunction([](const juce::String& t)
+            {
+                for (int i = 0; i < TuneMacro::numNoteSplitModes; ++i)
+                    if (t.trim().equalsIgnoreCase(TuneMacro::noteSplitModeNames[i]))
+                        return static_cast<float>(i) / static_cast<float>(TuneMacro::numNoteSplitModes - 1);
+                return t.getFloatValue() / 100.0f;
+            })));
 
     layout.add(std::make_unique<APB>("tune_snapScale",  "Snap to Scale", true));
     layout.add(std::make_unique<APB>("tune_autoScroll", "Auto-Scroll",   true));
