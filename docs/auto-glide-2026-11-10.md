@@ -103,3 +103,29 @@ level > -30 dB), the real gap was smaller and one-sided: notes that touch the no
   meet, the shift slides between them over up to 90 ms, and this metric counts that slide as error.
 - Tried and dropped (no measurable gain): letting the tracker follow breathy starts/tails inside a roll note at
   lower clarity.
+
+## Round 4: "+3 still has noticeable artifacts"
+On clearly sung frames nothing separates this build from Melodyne (`tools/retune-bench/rough.py`: periodicity,
+level flutter, both level with dry). What does: short bits INSIDE moved notes that came out unshifted
+(`leak.py`) - at +3 st that is a 3-semitone pitch blip. Melodyne 0.1 % of note frames, this build 0.9 %.
+
+Causes found in the engine trace:
+- Note start (8.03 s): the tracker stayed on the previous note / a harmonic (19 st away, clarity 0.65) for ~50 ms
+  while a clear pitch (0.77-0.96) sat on the new note; then lost one more hop to the jump guard.
+- Voiced consonants (13.83 s start, 13.27 s and 33.19 s ends): the fricative gate (zero-crossing rate) calls the
+  frame unvoiced although it is clearly pitched (0.5-0.76), so it passes dry and the correction is zeroed.
+
+Fix (`TuneEngine.h`): inside a moved roll note, when the tracker has no pitch or is more than 4 st from the note's
+sung centre, but a candidate with clarity >= 0.45 lies within 4 st of that centre, use it (and skip the jump guard
+and the sibilant zeroing for that hop). 0.38 fixed more ends but let one 11 ms growl back in.
+
+| +3 st | Melodyne | before | now |
+|---|---|---|---|
+| unshifted frames inside moved notes | 0.1 % | 0.9 % (5 notes) | 0.4 % (3 notes, 17-23 ms, all note ends) |
+| sung shape bent, all frames: inside notes / edges | 13 / 34 c | 25 / 65 c | 8 / 45 c |
+| growl spots, octave drops | - | 0 / 0 | 0 / 0 |
+
+Left: three note ends fading into a consonant or into near-silence (below the energy gate). Added hiss above
+6 kHz is +1.4 dB vs dry (Melodyne -1.1 dB) - not addressed.
+Limit of this method: the bench can only find artifacts that show up as pitch, level, periodicity or
+sub-fundamental energy. Anything else needs a timestamp from the owner's ears.

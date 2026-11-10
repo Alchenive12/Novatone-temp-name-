@@ -745,11 +745,33 @@ private:
 
         MPMResult mpmRes = (hasEnergy && !fricativeFrame) ? trackPitch(rawMpm) : MPMResult{};
 
+        // Inside a moved roll note the roll already knows which note this is. When the tracker has
+        // no pitch (a voiced consonant trips the fricative gate) or is still on something far away
+        // (the previous note, a harmonic), but a clear pitch sits near the note's sung centre, use
+        // that. Otherwise those 20-50 ms pass dry or mis-shifted: with a 3 st move, an audible blip.
+        bool rollGuided = false;
+        if (hasEnergy && overrideActive && overrideHasShift
+            && (! mpmRes.isVoiced || std::abs(Quantizer::hzToMidi(mpmRes.pitchHz) - overrideSungMidi) > rollNoteRangeSemitones))
+        {
+            float bestClarity = rollNoteMinClarity;
+            for (int i = 0; i < detector.getNumCandidates(); ++i)
+            {
+                const auto& c = detector.getCandidate(i);
+                if (c.clarity >= bestClarity && c.pitchHz >= activeMinVoiceHz && c.pitchHz <= activeMaxVoiceHz
+                    && std::abs(Quantizer::hzToMidi(c.pitchHz) - overrideSungMidi) < rollNoteRangeSemitones)
+                {
+                    bestClarity = c.clarity;
+                    mpmRes = c;
+                    rollGuided = true;
+                }
+            }
+        }
+
         const bool voicedNow = mpmRes.isVoiced;
         if (voicedNow && useFineWindow)
             refinePitch(mpmRes, readPtr);
 
-        currentlySibilant = (fricativeFrame || (!voicedNow && hasEnergy && zcr > 0.12f));
+        currentlySibilant = ((fricativeFrame && ! rollGuided) || (!voicedNow && hasEnergy && zcr > 0.12f));
 
         if (! voicedNow)
         {
@@ -803,7 +825,7 @@ private:
             mpmRes.pitchHz *= 0.5f;
         }
 
-        if (inNote && std::abs(detectedMidi - lastDetectedMidi) > maxJumpSemitones
+        if (inNote && ! rollGuided && std::abs(detectedMidi - lastDetectedMidi) > maxJumpSemitones
             && (! jumpPending || std::abs(detectedMidi - pendingJumpMidi) > pendingJumpToleranceSemitones))
         {
             jumpPending = true;
@@ -1393,6 +1415,8 @@ private:
     static constexpr int    unvoicedHopsBeforeRelease = 10;
     static constexpr float  naturalDevLimit = 1.2f; // st: beyond this it is another note, not expression
     static constexpr float  maxJumpSemitones = 7.0f;
+    static constexpr float  rollNoteMinClarity = 0.45f;      // a roll-guided pitch must be at least this clear (0.38 let one growl through)
+    static constexpr float  rollNoteRangeSemitones = 4.0f;   // and this close to the roll note's sung centre
     static constexpr float  pendingJumpToleranceSemitones = 2.5f;
     static constexpr float  vibratoCentreTauSeconds = 0.150f;
     float maxDeadbandSemitones = 0.03f;
