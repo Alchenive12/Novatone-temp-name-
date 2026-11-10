@@ -1943,6 +1943,7 @@ void PitchTraceComponent::syncActiveOverrideToEngine()
             slot.fadeMultiplier   = fadeEnv;
             slot.hasCustomPitch   = timeline[(size_t)h].hasCustomPitch;
             slot.customPitchMidi  = timeline[(size_t)h].customMidi;
+            slot.sungMidi         = n.detectedMidi;
             slot.shiftSemitones   = ShiftGlide::shiftAtHop(noteShift(n), h - n.startHop, juce::jmax(1, n.endHop - n.startHop),
                                                            n.rampInRatio, n.rampOutRatio, prevNb, nextNb, maxGlideHops);
             queue.setHopOverride(h, slot);

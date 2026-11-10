@@ -25,7 +25,7 @@ int main(int argc, char** argv){
 #ifdef HAS_GLIDE
       auto nb=[&](size_t j, bool touch){ ShiftGlide::Neighbour r; if(j<ns.size()&&touch){ r.touching=true; r.edited=ns[j].ed; r.shift=ns[j].ed? ns[j].tgt-ns[j].det:0.0f;} return r; };
       shift=ShiftGlide::shiftAtHop(q.tgt-q.det,(int)(hop-q.s),(int)(q.e-q.s),0.18f,0.18f, nb(k-1,k>0&&ns[k-1].e==q.s), nb(k+1,k+1<ns.size()&&ns[k+1].s==q.e), maxGlide); has=true;
-      e.setLiveNoteOverride(true,q.tgt,1.0f,1.0f,0.0f,0.18f,0.0f,false,60.0f,1.0f,0.18f,has,shift);
+      e.setLiveNoteOverride(true,q.tgt,1.0f,1.0f,0.0f,0.18f,0.0f,false,60.0f,1.0f,0.18f,has,shift,q.det);
 #else
       e.setLiveNoteOverride(true,q.tgt,1.0f,1.0f,0.0f,0.18f);
 #endif

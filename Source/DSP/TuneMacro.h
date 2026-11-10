@@ -54,9 +54,24 @@ namespace TuneMacro
         const float center      = std::clamp(0.56f + 0.44f * std::pow(x, 0.85f), 0.0f, 1.0f);
         const float variation   = std::clamp(1.05f * std::pow(s, 1.15f), 0.0f, 2.0f);
         const float transition  = spd;
-        const float sensitivity = std::clamp(0.50f + 0.35f * x, 0.0f, 1.0f);
+        const float sensitivity = 0.5f; // Note split is a 5-mode knob now; the macro leaves it on Balanced
 
         return { spd, hum, vib, center, variation, transition, sensitivity };
+    }
+
+    /** Note split knob: 5 modes (knob at 0, 25, 50, 75, 100 %). The middle one is the old default
+        (the 0-100 % knob opened at 73 %), the rest step evenly from it up to the old maximum. */
+    constexpr int numNoteSplitModes = 5;
+    constexpr const char* noteSplitModeNames[numNoteSplitModes] { "Fewest", "Fewer", "Balanced", "More", "Most" };
+    inline int noteSplitMode(float knob01) noexcept
+    {
+        return std::clamp(static_cast<int>(std::lround(knob01 * (numNoteSplitModes - 1))), 0, numNoteSplitModes - 1);
+    }
+    /** The 0..1 sensitivity the engine and the piano roll's note splitter work with. */
+    inline float sensitivityForNoteSplit(float knob01) noexcept
+    {
+        constexpr float amounts[numNoteSplitModes] { 0.455f, 0.591f, 0.7275f, 0.864f, 1.0f };
+        return amounts[noteSplitMode(knob01)];
     }
 
     inline TuneKnobSettings forCharacter(float x, bool lookahead) noexcept

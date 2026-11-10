@@ -237,6 +237,7 @@ public:
         bool  hasCustomPitch   = false;
         float customPitchMidi  = 60.0f;
         float shiftSemitones   = 0.0f;   ///< glided shift curve for this hop (ShiftGlide.h), per-note Center included
+        float sungMidi         = 60.0f;  ///< the note's sung centre (octave reference for the live detector)
     };
 
     /** Begins a lock-free GUI-thread update in the inactive back-buffer. */

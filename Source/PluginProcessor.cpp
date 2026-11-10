@@ -195,7 +195,6 @@ void NovaToneAudioProcessor::applySyncMacro()
     setParameterFromMessageThread("tune_center",         knobs.center);
     setParameterFromMessageThread("tune_variation",      knobs.variation);
     setParameterFromMessageThread("tune_transition",     knobs.transition);
-    setParameterFromMessageThread("tune_sensitivity",    knobs.sensitivity);
 }
 
 bool NovaToneAudioProcessor::smoothRequested() const noexcept
@@ -392,7 +391,7 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
     const float center      = load(tuneCenterParam,      0.85f);
     const float variation   = load(tuneVariationParam,   1.00f);
     const float transition  = load(tuneTransitionParam,  load(tuneFlexAmountParam, 0.65f));
-    const float sensitivity = load(tuneSensitivityParam, 0.65f);
+    const float sensitivity = TuneMacro::sensitivityForNoteSplit(load(tuneSensitivityParam, 0.5f));
     const float vibrato     = load(tuneVibratoParam,     0.0f);
     const float globalForm  = load(alterFormantParam,    0.0f);
     const uint16_t scaleMask = packScaleDegreeMask();
@@ -463,7 +462,8 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
             hopSlot.fadeMultiplier,
             hopSlot.rampOutRatio,
             true,
-            hopSlot.shiftSemitones);
+            hopSlot.shiftSemitones,
+            hopSlot.sungMidi);
     }
     else if (ovActive)
     {
@@ -998,7 +998,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout NovaToneAudioProcessor::crea
     layout.add(std::make_unique<APF>("tune_center",      "Center",      NR(0.0f, 1.0f, 0.001f), startKnobs.center,      percentAttrs()));
     layout.add(std::make_unique<APF>("tune_variation",   "Variation",   NR(0.0f, 2.0f, 0.001f), startKnobs.variation,   percentAttrs()));
     layout.add(std::make_unique<APF>("tune_transition",  "Transition",  NR(0.0f, 1.0f, 0.001f), startKnobs.transition,  percentAttrs()));
-    layout.add(std::make_unique<APF>("tune_sensitivity", "Sensitivity", NR(0.0f, 1.0f, 0.001f), startKnobs.sensitivity, percentAttrs()));
+    layout.add(std::make_unique<APF>("tune_sensitivity", "Note Split", NR(0.0f, 1.0f, 0.25f), startKnobs.sensitivity,
+        juce::AudioParameterFloatAttributes()
+            .withStringFromValueFunction([](float v, int) { return juce::String(TuneMacro::noteSplitModeNames[TuneMacro::noteSplitMode(v)]); })
+            .withValueFromStringFunction([](const juce::String& t)
+            {
+                for (int i = 0; i < TuneMacro::numNoteSplitModes; ++i)
+                    if (t.trim().equalsIgnoreCase(TuneMacro::noteSplitModeNames[i]))
+                        return static_cast<float>(i) / static_cast<float>(TuneMacro::numNoteSplitModes - 1);
+                return t.getFloatValue() / 100.0f;
+            })));
 
     layout.add(std::make_unique<APB>("tune_snapScale",  "Snap to Scale", true));
     layout.add(std::make_unique<APB>("tune_autoScroll", "Auto-Scroll",   true));

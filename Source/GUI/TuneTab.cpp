@@ -250,7 +250,7 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     addAndMakeVisible (pianoMask);
 
     centerKnob.setTooltipText ("Center: pulls the average pitch of every note toward the target scale note (100% = dead-center pitch).");
-    sensitivityKnob.setTooltipText ("Sensitivity: how eagerly NovaTone splits phrases into separate notes and locks onto quiet syllables.");
+    sensitivityKnob.setTooltipText ("Note split: how eagerly NovaTone splits phrases into separate notes and locks onto quiet syllables. Five modes, Fewest to Most; Balanced is the default.");
     variationKnob.setTooltipText ("Variation: scales vibrato and pitch expression inside each note (0% = flat line, 100% = natural expression).");
     transitionKnob.setTooltipText ("Transition: how fast pitch glides from one note to the next (100% = instant snap).");
     formantKnob.setTooltipText ("Formant: shifts vocal throat character deeper (-) or brighter (+) while keeping pitch intact.");
@@ -540,9 +540,9 @@ TuneTab::TuneTab (juce::AudioProcessorValueTreeState& apvts, PitchTraceQueue& qu
     stylePopButton.setTooltip     ("Pop: tight, polished modern pop (Center 92%, Variation 55%, Transition 78%, Sensitivity 72%, Humanize 18%)");
     styleHardButton.setTooltip    ("Hard tune: instant hard snap (Center 100%, Variation 0%, Transition 100%, Sensitivity 85%, Humanize 0%)");
 
-    styleNaturalButton.onClick = [this] { applyQuickVocalStyle (0.58f, 0.52f, 0.95f, 0.26f, 45.0f, 0.50f); };
-    stylePopButton.onClick     = [this] { applyQuickVocalStyle (0.92f, 0.72f, 0.55f, 0.78f, 18.0f, 0.18f); };
-    styleHardButton.onClick    = [this] { applyQuickVocalStyle (1.00f, 0.85f, 0.00f, 1.00f, 0.0f,  0.00f); };
+    styleNaturalButton.onClick = [this] { applyQuickVocalStyle (0.58f, 0.25f, 0.95f, 0.26f, 45.0f, 0.50f); };
+    stylePopButton.onClick     = [this] { applyQuickVocalStyle (0.92f, 0.50f, 0.55f, 0.78f, 18.0f, 0.18f); };
+    styleHardButton.onClick    = [this] { applyQuickVocalStyle (1.00f, 0.75f, 0.00f, 1.00f, 0.0f,  0.00f); };
 
     humanizeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     humanizeSlider.setRange (0.0, 1.0, 0.01);

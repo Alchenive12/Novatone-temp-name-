@@ -41,3 +41,29 @@ Pitch error = how far (output pitch - sung pitch) is from each note's own shift,
 
 Not yet judged by ear. Note: at Variation 100 % a note that drifts while held keeps its drift (only its centre moves);
 lower Variation still flattens it.
+
+## Round 2 (same day): "monster" artifact + Note split modes
+Owner's ears on the first A/B: better half the time, but split-second "monster" growls that the old build did not have.
+
+**Cause.** The live pitch tracker can lock an octave LOW when a phrase starts breathy (the double period is just as
+periodic) and continuity then holds it there - on yudy groovy for a whole 1.6 s phrase at 19.1 s, 8 regions / 2.0 s in
+total. PSOLA then cuts two-period grains, and shifting those gives an octave-down growl. The old build hid it by
+accident: an override more than 12 st from the detected pitch was ignored, so those regions were simply left
+unshifted (a wrong note, but no growl). The shift curve applied the move anyway.
+
+**Fixes** (`TuneEngine.h`, + `sungMidi` passed through the hop slot):
+1. Tracker: inside a note, if the octave above is equally clear (clarity >= 0.90 and within 0.03), take it.
+   A genuinely doubled/creaky voice is clearly less periodic at the half period and stays put.
+2. Octave guard towards the roll note's sung centre now works in both directions (was: only octave-too-high).
+3. The shift curve is only used while the live pitch is within 7.5 st of the roll's note; otherwise old behaviour.
+
+Result on yudy groovy: octave-wrong regions 8 (2.0 s) -> 3 (0.19 s, all <= 145 ms and not shifted); octave-down
+spots in the render 1 x 540 ms (+1) / 700 ms (+3) -> none; sub-fundamental growl spots at +3: 3 -> 0
+(`tools/retune-bench/find_sub.py`). Pitch/level numbers unchanged from the table above. Not yet re-heard.
+Caveat: in the plugin fix 2 leans on the piano roll's own analysis of the note being in the right octave.
+
+**Note split knob** (`tune_sensitivity`, same ID): now 5 modes - Fewest / Fewer / Balanced / More / Most
+(knob at 0 / 25 / 50 / 75 / 100 %). Balanced = the old default (old knob 73 %); the others step evenly
+(sensitivity 0.455 / 0.591 / 0.7275 / 0.864 / 1.0). The SOFT-HARD macro no longer moves it. Style buttons:
+Natural -> Fewer, Pop -> Balanced, Hard -> More. Sessions saved with the old knob load on the nearest mode
+(an untouched old default lands on More - set it back to Balanced once).
