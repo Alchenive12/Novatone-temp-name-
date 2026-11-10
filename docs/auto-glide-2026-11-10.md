@@ -67,3 +67,16 @@ Caveat: in the plugin fix 2 leans on the piano roll's own analysis of the note b
 (sensitivity 0.455 / 0.591 / 0.7275 / 0.864 / 1.0). The SOFT-HARD macro no longer moves it. Style buttons:
 Natural -> Fewer, Pop -> Balanced, Hard -> More. Sessions saved with the old knob load on the nearest mode
 (an untouched old default lands on More - set it back to Balanced once).
+
+## Versus Melodyne (yudy groovy, Melodyne renders of Nov 9, `tools/retune-bench/cmp_mel.py`)
+Each render judged per note against its own shift, so Melodyne's key-snapped note choices don't count against it.
+
+| Move | Sung shape bent inside notes (Mel / old / new) | at note edges | Level vs dry | Timbre change vs dry |
+|---|---|---|---|---|
+| tune only | 9 / 14 / 6 c | 27 / 39 / 17 c | -0.3 / -0.2 / 0.0 dB | 3.1 / 2.0 / 1.6 dB |
+| +1 st | 15 / 17 / 9 c | 26 / 42 / 29 c | -0.8 / -0.3 / 0.0 dB | 3.9 / 3.6 / 4.1 dB |
+| +3 st | 13 / 18 / 6 c | 34 / 59 / 52 c | -0.2 / -2.2 / -0.5 dB | 7.6 / 6.5 / 7.0 dB |
+
+Reading: on these numbers the new build is level with Melodyne inside notes and on level; Melodyne is smoother at
+note edges at +3. The numbers do not measure grain/phase artifacts - only ears do. "How close notes land to the
+semitone" is not comparable (the bench and the metric share one pitch reader; Melodyne uses its own note centres).
