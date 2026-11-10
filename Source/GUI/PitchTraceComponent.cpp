@@ -1,4 +1,5 @@
 #include "PitchTraceComponent.h"
+#include "../DSP/ShiftGlide.h"
 #include "../Poly/PolyClipSession.h"
 #include "ModuleTabs.h"
 #if __has_include("../DSP/MPMDetector.h")
@@ -1893,11 +1894,33 @@ void PitchTraceComponent::syncActiveOverrideToEngine()
     // applies its own pitch, formant, variation, gain, sibilant trim, custom curve,
     // and curved fade-in/out envelope during playback:
     queue.beginHopOverrideUpdate();
+    // Auto-glide: each edited note is shifted by (new centre - sung centre) and that shift glides
+    // to the neighbouring notes' shift where they touch (ShiftGlide.h). Glides are at most 90 ms.
+    const float hopSec = timeline.size() > 1 ? static_cast<float>(timeline[1].timeStampSeconds - timeline[0].timeStampSeconds) : 0.0f;
+    const float maxGlideHops = hopSec > 1.0e-4f ? 0.090f / hopSec : 8.0f;
+    auto noteShift = [](const NewtoneNoteBlock& b) noexcept { return b.noteCenter * (b.effectiveTargetMidi() - b.detectedMidi); };
+    auto neighbourAt = [&](int hop) noexcept
+    {
+        ShiftGlide::Neighbour nb;
+        if (hop < 0 || hop >= static_cast<int>(timeline.size()) || !timeline[(size_t)hop].data.isVoiced)
+            return nb;
+        const NewtoneNoteBlock* b = findNoteById(timeline[(size_t)hop].noteId);
+        if (b == nullptr || b->isSibilant)
+            return nb;
+        nb.touching = true;
+        nb.edited   = b->userEdited;
+        // shortcut: an unedited neighbour counts as shift 0, but with the global Center knob up the
+        // engine still auto-tunes it by up to ~50 cents; pass its real correction if that step is heard.
+        nb.shift    = b->userEdited ? noteShift(*b) : 0.0f;
+        return nb;
+    };
     for (const auto& n : notes)
     {
         if (n.isSibilant || !n.userEdited)
             continue;
         const float span = static_cast<float>(juce::jmax(1, n.endHop - n.startHop));
+        const auto prevNb = neighbourAt(n.startHop - 1);
+        const auto nextNb = neighbourAt(n.endHop);
         for (int h = juce::jmax(0, n.startHop); h < juce::jmin(static_cast<int>(timeline.size()), n.endHop); ++h)
         {
             const float u = (static_cast<float>(h - n.startHop) + 0.5f) / span;
@@ -1920,6 +1943,8 @@ void PitchTraceComponent::syncActiveOverrideToEngine()
             slot.fadeMultiplier   = fadeEnv;
             slot.hasCustomPitch   = timeline[(size_t)h].hasCustomPitch;
             slot.customPitchMidi  = timeline[(size_t)h].customMidi;
+            slot.shiftSemitones   = ShiftGlide::shiftAtHop(noteShift(n), h - n.startHop, juce::jmax(1, n.endHop - n.startHop),
+                                                           n.rampInRatio, n.rampOutRatio, prevNb, nextNb, maxGlideHops);
             queue.setHopOverride(h, slot);
         }
     }

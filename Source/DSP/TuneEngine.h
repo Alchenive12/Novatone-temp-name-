@@ -122,8 +122,11 @@ public:
                              float noteVariation, float gainDb, float rampIn,
                              float sibilantDb = 0.0f, bool hasCustomPitch = false,
                              float customPitchMidi = 60.0f, float fadeMultiplier = 1.0f,
-                             float rampOut = 0.18f) noexcept
+                             float rampOut = 0.18f, bool hasShift = false,
+                             float shiftSemitones = 0.0f) noexcept
     {
+        overrideHasShift        = hasShift;
+        overrideShiftSemitones  = shiftSemitones;
         overrideActive          = active;
         overrideTargetMidi      = targetMidi;
         overrideCenter          = noteCenter;
@@ -638,6 +641,8 @@ public:
     bool  isVoiced()              const noexcept { return currentlyVoiced; }
     bool  isSibilant()            const noexcept { return currentlySibilant; }
     int   getCurrentHopIndex()    const noexcept { return hopCounter; }
+    /** The pitch frame being corrected is centred this many samples before the newest input. */
+    int   getPitchAnalysisDelaySamples() const noexcept { return windowSize / 2; }
     float getAppliedCorrectionSemitones() const noexcept { return appliedCorrection; }
 
 private:
@@ -1194,6 +1199,18 @@ private:
 
         float desiredMidi = activeCentreMidi + shapedDeviation + organicMicroDrift;
 
+        // Moved piano-roll note at natural Variation: play what the singer sang, shifted by the
+        // roll's own glided shift curve (whole-note centre, known offline), instead of chasing a
+        // running centre that flattens the scoop into the note and redraws the slide between
+        // notes. Lower Variation blends back to the shaped response above. The per-note Center is
+        // already in the curve; the global Center knob scales it here (without Humanize's 6%
+        // loosening: a note the user placed by hand should land where they put it).
+        if (overrideActive && overrideHasShift)
+        {
+            const float globalCenter = juce::jlimit(0.0f, 1.0f, smoothedCenterAmount);
+            desiredMidi += naturalShare * (detectedMidi + globalCenter * overrideShiftSemitones - desiredMidi);
+        }
+
         // 5. Quintic Phrase-Onset Scoop Preservation (only when Humanize is OFF and Transition is slow;
         //    when Humanize is ON, `entryScoopVariation` already projects the scoop directly around `activeCentreMidi`!):
         if (! ablateNoOnsetGate && hGate <= 0.01f && transitionAmount < 0.90f && hopsSincePhraseOnset < 5)
@@ -1374,6 +1391,8 @@ private:
     float overrideFadeMultiplier  = 1.0f;
     bool  overrideHasCustomPitch  = false;
     float overrideCustomPitchMidi = 60.0f;
+    bool  overrideHasShift        = false;  ///< piano-roll note: follow the shift curve (see ShiftGlide.h)
+    float overrideShiftSemitones  = 0.0f;
 
     // Live MIDI Target Note state:
     int      midiTargetNote = -1;

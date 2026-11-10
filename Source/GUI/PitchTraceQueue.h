@@ -236,6 +236,7 @@ public:
         float fadeMultiplier   = 1.0f;
         bool  hasCustomPitch   = false;
         float customPitchMidi  = 60.0f;
+        float shiftSemitones   = 0.0f;   ///< glided shift curve for this hop (ShiftGlide.h), per-note Center included
     };
 
     /** Begins a lock-free GUI-thread update in the inactive back-buffer. */

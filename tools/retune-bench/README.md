@@ -30,3 +30,13 @@ g++ -std=c++17 -O2 -include juceconf.h -I $S -I $S/DSP -I $J harness2.cpp \
 Targets for a real vocal: pYIN the input (hop 512), median-smooth over ~13 frames, round to semitones, add the shift,
 and look the note up at (block start - 1024 samples) - see the notes in the findings doc.
 Needs `pip install librosa soundfile`.
+
+## Auto-glide bench (2026-11-10)
+- `mk2.py` - legato phrase with scoops, slides between notes, vibrato and a breath (`in.f32`, `notes_base.txt`).
+- `harness3.cpp` - `h3 in.f32 out.f32 notes.txt variation humanize lagSamples` - feeds the engine the piano roll's
+  notes the way the plugin does (per-hop target + `ShiftGlide` shift curve). Builds against old commits too
+  (no shift curve there). Build like `harness2.cpp`.
+- `ev3.py A|B exeA,exeB lag...` - A: every note snapped +1; B: two notes +2 between untouched neighbours.
+  Prints how far (output pitch - input pitch) is from each note's shift, in the note core and at its edges.
+- `lvl.py exe...` - output level vs shift (-5..+5 st), using `harness2`.
+- `glide_test.cpp` - assert self-check of `Source/DSP/ShiftGlide.h` (no JUCE).

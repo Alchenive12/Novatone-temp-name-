@@ -438,7 +438,11 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
 
     float extraNoteFormant = 0.0f;
     const int playHop = pitchQueue.currentPlayheadHop.load(std::memory_order_relaxed);
-    const int engineHop = (playHop > 0) ? playHop : (tuneEngine.getCurrentHopIndex() % PitchTraceQueue::maxTimelineHops);
+    // The engine corrects audio it heard half an analysis window ago, so read the note that was
+    // under the playhead then (otherwise each note's last ~23 ms got the next note's pitch).
+    // shortcut: assumes the clip rate equals the host rate; convert if clips of another rate drift.
+    const int lookbackHops = tuneEngine.getPitchAnalysisDelaySamples() / juce::jmax(1, pitchQueue.monoPreview.hopSamples);
+    const int engineHop = (playHop > 0) ? juce::jmax(0, playHop - lookbackHops) : (tuneEngine.getCurrentHopIndex() % PitchTraceQueue::maxTimelineHops);
     PitchTraceQueue::HopOverrideSlot hopSlot {};
 
     const auto& ov = pitchQueue.getLiveOverride();
@@ -457,7 +461,9 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
             hopSlot.hasCustomPitch,
             hopSlot.customPitchMidi,
             hopSlot.fadeMultiplier,
-            hopSlot.rampOutRatio);
+            hopSlot.rampOutRatio,
+            true,
+            hopSlot.shiftSemitones);
     }
     else if (ovActive)
     {
