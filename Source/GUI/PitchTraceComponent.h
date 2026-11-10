@@ -239,6 +239,8 @@ private:
     juce::Rectangle<float> getNoteRect(const NewtoneNoteBlock& note, juce::Rectangle<float> grid) const noexcept;
 
     float evaluateShapedMidiAtHop(int hopIdx, float globalCenter, float globalVariation, float globalTransition) const noexcept;
+    /** The glided shift (semitones) the engine plays for edited note n at hop h (ShiftGlide.h). */
+    float shiftCurveAtHop(const NewtoneNoteBlock& n, int hopIdx) const noexcept;
     float evaluatePolyShapedMidiAtHop(int hopIdx, int voiceSlot, float globalCenter, float globalVariation, float globalTransition) const noexcept;
     int   findNoteIndexAtPoint(juce::Point<float> pt, juce::Rectangle<float> grid) const noexcept;
     NewtoneNoteBlock* findNoteById(int id) noexcept;

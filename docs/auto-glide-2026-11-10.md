@@ -129,3 +129,21 @@ Left: three note ends fading into a consonant or into near-silence (below the en
 6 kHz is +1.4 dB vs dry (Melodyne -1.1 dB) - not addressed.
 Limit of this method: the bench can only find artifacts that show up as pitch, level, periodicity or
 sub-fundamental energy. Anything else needs a timestamp from the owner's ears.
+
+## Round 5: closing the open items (branch `remote/close-open-items`)
+Owner listened to PR #6: sounds good. This round closes what was still listed as open.
+Verification: level 2 (offline bench, ASan/UBSan clean, Linux VST3 + Standalone build) + CI. Not heard in a DAW.
+The yudy groovy vocal was not reachable this session (PC folder access not granted), so the numbers below are
+from synthetic vocals (`mk3.py`, `mk3b.py`) - re-check on yudy groovy at home.
+
+| Item | Change | Result |
+|---|---|---|
+| Drawn curve showed the old prediction | `PitchTraceComponent::shiftCurveAtHop` is now the one place the glided shift is built; the engine sync and the drawn cyan curve both use it, and the drawn curve applies it the way `TuneEngine` does (sung pitch + Center x shift, blended by Variation, only within 7.5 st) | piano roll draws what is played. Not looked at on screen |
+| Note-end blips (tails fading below the energy gate pass dry) | `TuneEngine.h`: inside a moved roll note the energy gate is 12 dB lower; the roll-guided pick still needs clarity >= 0.45 near the note | `mk3b` +3 st: unshifted frames inside moved notes 0.5 % (1 note, 17 ms) -> 0.1 % (none >= 3 frames); growl spots 0 / 0 |
+| Hiss above 6 kHz when shifting up | `TuneEngine.h`, in the existing sibilant crossover: the band above 6 kHz of the shifted signal is never louder than the dry band (reduce only, max -6 dB, 30 ms) | `mk3` +3 st, 6-8 kHz vs dry: +0.8 -> +0.5 dB, 8-16 kHz: +0.5 -> +0.1 dB. Halves it, does not zero it |
+| Old sessions opened Note split on More | `TuneMacro::noteSplitKnobFromSaved`, used in `setStateInformation`: an off-grid (old 0-100 %) value opens on the mode with the nearest sensitivity | old 73 % -> Balanced. `tools/retune-bench/notesplit_test.cpp` |
+
+Unchanged on the legato bench (`ev3.py` A/B): core 3.8 c, edges 10.6 c, level +0.02 dB - same as before.
+
+Not done: poly clip mode has no auto-glide or level match. It is a separate (spectral) renderer and would be a new
+feature, not a fix - left until it is asked for.

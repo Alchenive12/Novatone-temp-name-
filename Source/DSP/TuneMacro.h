@@ -74,6 +74,20 @@ namespace TuneMacro
         return amounts[noteSplitMode(knob01)];
     }
 
+    /** A session saved with the old 0-100 % knob (any value off the 5-mode grid) opens on the mode
+        whose sensitivity is nearest to what it played, so the old 73 % default lands on Balanced. */
+    inline float noteSplitKnobFromSaved(float saved01) noexcept
+    {
+        const float onGrid = static_cast<float>(noteSplitMode(saved01)) / static_cast<float>(numNoteSplitModes - 1);
+        if (std::abs(saved01 - onGrid) < 1.0e-3f)
+            return onGrid;
+        int best = 0;
+        for (int i = 1; i < numNoteSplitModes; ++i)
+            if (std::abs(sensitivityForNoteSplit(static_cast<float>(i) / (numNoteSplitModes - 1)) - saved01) < std::abs(sensitivityForNoteSplit(static_cast<float>(best) / (numNoteSplitModes - 1)) - saved01))
+                best = i;
+        return static_cast<float>(best) / static_cast<float>(numNoteSplitModes - 1);
+    }
+
     inline TuneKnobSettings forCharacter(float x, bool lookahead) noexcept
     {
         return forCharacter(x, lookahead ? lookaheadCurves : directCurves);
