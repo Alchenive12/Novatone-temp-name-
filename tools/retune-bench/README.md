@@ -40,3 +40,5 @@ Needs `pip install librosa soundfile`.
   Prints how far (output pitch - input pitch) is from each note's shift, in the note core and at its edges.
 - `lvl.py exe...` - output level vs shift (-5..+5 st), using `harness2`.
 - `glide_test.cpp` - assert self-check of `Source/DSP/ShiftGlide.h` (no JUCE).
+- `prep_notes.py <vocal.wav> <dir> [shifts]` + `render_ab3.py <dir> <out> <h3_old> <h3_new> [shifts]` - the same
+  old-vs-new comparison on a real vocal (notes from pYIN, every note snapped and moved), with WAVs to listen to.

@@ -28,3 +28,16 @@ Shifted notes also got quieter (-2 dB at +3 st, -3 dB at +-5).
 ## Next
 Listen at home (yudy groovy chorus, +1 / +3, single note moved), then: drawn curve = shift curve,
 I7 dual-mark grains for upward shifts, I9 formant correction above +3 st.
+
+## Real vocal check (yudy groovy, 142 notes, every note snapped + moved)
+`tools/retune-bench/prep_notes.py` + `render_ab3.py` (harness3; old = main a5726b3, new = this branch).
+Pitch error = how far (output pitch - sung pitch) is from each note's own shift, i.e. how much of the sung shape was bent.
+
+| Move | inside notes old -> new | note edges old -> new | level vs dry old -> new |
+|---|---|---|---|
+| snap only | 32 -> 5 c | 40 -> 18 c | -0.16 -> 0.00 dB |
+| +1 st | 41 -> 10 c | 52 -> 32 c | -0.27 -> -0.03 dB |
+| +3 st | 106 -> 23 c | 97 -> 60 c | -2.16 -> -0.30 dB |
+
+Not yet judged by ear. Note: at Variation 100 % a note that drifts while held keeps its drift (only its centre moves);
+lower Variation still flattens it.
