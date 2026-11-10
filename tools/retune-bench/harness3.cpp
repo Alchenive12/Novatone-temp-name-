@@ -5,7 +5,7 @@
 #endif
 #include <cstdio>
 #include <vector>
-// harness3 in.f32 out.f32 notes.txt variation humanize lagSamples
+// harness3 in.f32 out.f32 notes.txt variation humanize lagSamples   (lag 512 = what the plugin does at 512-sample blocks)
 // notes.txt: startSample endSample detectedMidi targetMidi edited   (the piano roll's notes; hop = 512)
 struct N { long s, e; float det, tgt; int ed; };
 int main(int argc, char** argv){

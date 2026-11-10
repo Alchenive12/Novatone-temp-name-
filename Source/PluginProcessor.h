@@ -98,6 +98,7 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void pushParametersToEngines() noexcept;
+    int  currentBlockSamples = 512; ///< size of the block being processed (audio thread only)
     uint16_t packScaleDegreeMask() const noexcept;
 
     void parameterChanged(const juce::String& parameterID, float newValue) override;

@@ -8,7 +8,7 @@ for k in shifts:
     nt = np.loadtxt(f'{d}/notes{k}.txt')
     for lab, binp in (('old', A), ('new', B)):
         raw = f'{out}/r.f32'
-        subprocess.run([binp, f'{d}/yv.f32', raw, f'{d}/notes{k}.txt', '1.0', '0.5', '1024'], check=True, stderr=subprocess.DEVNULL)
+        subprocess.run([binp, f'{d}/yv.f32', raw, f'{d}/notes{k}.txt', '1.0', '0.5', '512' if lab == 'new' else '1024'], check=True, stderr=subprocess.DEVNULL)
         y = np.fromfile(raw, np.float32); os.remove(raw)
         sf.write(f'{out}/shift{k:+d}_{lab}.wav', np.clip(y, -1, 1), sr, subtype='PCM_24')
         f, _, _ = librosa.pyin(y.astype(float), fmin=70, fmax=1100, sr=sr, frame_length=2048, hop_length=hop)

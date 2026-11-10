@@ -744,6 +744,7 @@ private:
         const bool fricativeFrame = hasEnergy && (zcr > 0.14f || (zcr > 0.09f && rawMpm.pitchHz > 370.0f && rawMpm.clarity < 0.85f));
 
         MPMResult mpmRes = (hasEnergy && !fricativeFrame) ? trackPitch(rawMpm) : MPMResult{};
+
         const bool voicedNow = mpmRes.isVoiced;
         if (voicedNow && useFineWindow)
             refinePitch(mpmRes, readPtr);
@@ -1227,18 +1228,6 @@ private:
 
         float desiredMidi = activeCentreMidi + shapedDeviation + organicMicroDrift;
 
-        // Moved piano-roll note at natural Variation: play what the singer sang, shifted by the
-        // roll's own glided shift curve (whole-note centre, known offline), instead of chasing a
-        // running centre that flattens the scoop into the note and redraws the slide between
-        // notes. Lower Variation blends back to the shaped response above. The per-note Center is
-        // already in the curve; the global Center knob scales it here (without Humanize's 6%
-        // loosening: a note the user placed by hand should land where they put it).
-        // Only while the live pitch agrees with the roll's note; otherwise the old response stands.
-        if (overrideActive && overrideHasShift && std::abs(detectedMidi - overrideSungMidi) < 7.5f)
-        {
-            const float globalCenter = juce::jlimit(0.0f, 1.0f, smoothedCenterAmount);
-            desiredMidi += naturalShare * (detectedMidi + globalCenter * overrideShiftSemitones - desiredMidi);
-        }
 
         // 5. Quintic Phrase-Onset Scoop Preservation (only when Humanize is OFF and Transition is slow;
         //    when Humanize is ON, `entryScoopVariation` already projects the scoop directly around `activeCentreMidi`!):
@@ -1262,6 +1251,21 @@ private:
             const float tailGate = juce::jmax(hGate, overrideActive ? juce::jlimit(0.0f, 1.0f, (overrideRampOut - 0.18f) * 3.0f) : 0.0f);
             const float blend = 1.0f - tailGate * (1.0f - clarityWeight);
             desiredMidi = detectedMidi + blend * (desiredMidi - detectedMidi);
+        }
+
+        // Moved piano-roll note at natural Variation: play what the singer sang, shifted by the
+        // roll's own glided shift curve (whole-note centre, known offline), instead of chasing a
+        // running centre that flattens the scoop into the note and redraws the slide between
+        // notes. Lower Variation blends back to the shaped response above. The per-note Center is
+        // already in the curve; the global Center knob scales it here (without Humanize's 6%
+        // loosening: a note the user placed by hand should land where they put it).
+        // Only while the live pitch agrees with the roll's note; otherwise the old response stands.
+        // Applied last: the onset ramp and breathy-tail release above let go of the correction at
+        // quiet note starts and ends, which for a moved note is a pitch droop of the whole move.
+        if (overrideActive && overrideHasShift && std::abs(detectedMidi - overrideSungMidi) < 7.5f)
+        {
+            const float globalCenter = juce::jlimit(0.0f, 1.0f, smoothedCenterAmount);
+            desiredMidi += naturalShare * (detectedMidi + globalCenter * overrideShiftSemitones - desiredMidi);
         }
 
         return desiredMidi;

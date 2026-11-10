@@ -438,9 +438,12 @@ void NovaToneAudioProcessor::pushParametersToEngines() noexcept
     float extraNoteFormant = 0.0f;
     const int playHop = pitchQueue.currentPlayheadHop.load(std::memory_order_relaxed);
     // The engine corrects audio it heard half an analysis window ago, so read the note that was
-    // under the playhead then (otherwise each note's last ~23 ms got the next note's pitch).
+    // under the playhead then (otherwise each note's end got the next note's pitch). This lookup
+    // serves the whole block, so aim at the block's middle. Measured on a real vocal: at 512-sample
+    // blocks one roll hop back balances note starts and ends; two is late, none is early.
     // shortcut: assumes the clip rate equals the host rate; convert if clips of another rate drift.
-    const int lookbackHops = tuneEngine.getPitchAnalysisDelaySamples() / juce::jmax(1, pitchQueue.monoPreview.hopSamples);
+    const int lookbackHops = juce::jmax(0, tuneEngine.getPitchAnalysisDelaySamples() - currentBlockSamples / 2)
+                           / juce::jmax(1, pitchQueue.monoPreview.hopSamples);
     const int engineHop = (playHop > 0) ? juce::jmax(0, playHop - lookbackHops) : (tuneEngine.getCurrentHopIndex() % PitchTraceQueue::maxTimelineHops);
     PitchTraceQueue::HopOverrideSlot hopSlot {};
 
@@ -746,6 +749,7 @@ void NovaToneAudioProcessor::processBlock(juce::AudioBuffer<float>& fullBuffer, 
 
     captureMonoTake(buffer, hostSample, hostPlaying);   // raw input, before the preview replaces it
     renderMonoPreview(buffer, hostSample, hostPlaying);
+    currentBlockSamples = buffer.getNumSamples();
     pushParametersToEngines();
 
     juce::dsp::AudioBlock<float> block(buffer);

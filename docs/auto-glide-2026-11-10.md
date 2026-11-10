@@ -80,3 +80,26 @@ Each render judged per note against its own shift, so Melodyne's key-snapped not
 Reading: on these numbers the new build is level with Melodyne inside notes and on level; Melodyne is smoother at
 note edges at +3. The numbers do not measure grain/phase artifacts - only ears do. "How close notes land to the
 semitone" is not comparable (the bench and the metric share one pitch reader; Melodyne uses its own note centres).
+
+## Round 3: note edges at +3
+The "edges 52 c vs Melodyne 34 c" figure was mostly not real: the frames that hurt were consonants, breaths and
+fading tails where the bench's pitch reader invents a pitch and the engine (correctly) passes the sound dry.
+Measured only where the dry take is clearly pitched (`tools/retune-bench/edge2.py`: pYIN voiced prob > 0.8,
+level > -30 dB), the real gap was smaller and one-sided: notes that touch the note before them started ~25 ms late.
+
+| +3 st, clearly pitched frames | Melodyne | before | now |
+|---|---|---|---|
+| inside notes | 8 c | 5 c | 5 c |
+| note edges (70 ms) | 8 c | 14 c | 11 c |
+| first frame of a touching note | 7 c | 57 c | 38 c |
+
+(+1 st: edges 7 / 15 / 11 c.)
+
+- Cause: the per-block note lookup looked two roll hops back; that is right for the first sample of a 512 block but
+  late for the block as a whole. Now it aims at the block's middle (`PluginProcessor.cpp`), one hop at 512.
+- The shift curve is now applied after the Humanize onset ramp and breathy-tail release, so a quiet tail of a
+  moved note is not let go back towards the unmoved pitch (`TuneEngine.h`). Small effect on this take.
+- What is left against Melodyne (11 vs 8 c) is the auto-glide itself: where two moved notes with different shifts
+  meet, the shift slides between them over up to 90 ms, and this metric counts that slide as error.
+- Tried and dropped (no measurable gain): letting the tracker follow breathy starts/tails inside a roll note at
+  lower clarity.
