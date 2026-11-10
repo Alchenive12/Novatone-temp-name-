@@ -210,9 +210,6 @@ public:
         sibilantDryRing.setSize(juce::jmax(1, static_cast<int>(spec.numChannels)), sibilantRingSize);
         const float gCross = std::tan(juce::MathConstants<float>::pi * juce::jmin(3800.0f, static_cast<float>(sampleRate * 0.42)) / static_cast<float>(sampleRate));
         sibilantLpG = gCross / (1.0f + gCross);
-        hissAlpha = static_cast<float> (1.0 - std::exp(-1.0 / (sampleRate * 0.030)));
-        const float gHiss = std::tan(juce::MathConstants<float>::pi * juce::jmin(6000.0f, static_cast<float>(sampleRate * 0.42)) / static_cast<float>(sampleRate));
-        hissLpG = gHiss / (1.0f + gHiss);
 
         analysisBuffer.setSize(1, windowSize);
         vibratoCentreAlpha = 1.0f - std::exp(-hopSeconds / (ablateCentreTau > 0.0f ? ablateCentreTau : vibratoCentreTauSeconds));
@@ -329,10 +326,6 @@ public:
         sibilantWritePos = 0;
         sibilantWetLpState.fill(0.0f);
         sibilantDryLpState.fill(0.0f);
-        hissWetLpState.fill(0.0f);
-        hissDryLpState.fill(0.0f);
-        hissDryPower = hissWetPower = 0.0f;
-        hissGain = 1.0f;
         inputCounter = 0;
         numActivePolyVoices = 0;
         prevNumPolyVoices = 0;
@@ -516,23 +509,8 @@ public:
                         lpW += sibilantLpG * (yWet - lpW);
                         lpD += sibilantLpG * (xDry - lpD);
 
+                        const float hpWet = yWet - lpW;
                         const float hpDry = xDry - lpD;
-                        // Hiss match: PSOLA grains add breath hiss above ~6 kHz when shifting up (+1.4 dB
-                        // at +3 st on yudy groovy). Never let that band get louder than it was sung
-                        // (only turned down, at most 6 dB, 30 ms follow).
-                        float& lp6W = hissWetLpState[(size_t)juce::jmin(ch, 1)];
-                        float& lp6D = hissDryLpState[(size_t)juce::jmin(ch, 1)];
-                        lp6W += hissLpG * (yWet - lp6W);
-                        lp6D += hissLpG * (xDry - lp6D);
-                        if (ch == 0)
-                        {
-                            hissDryPower += hissAlpha * ((xDry - lp6D) * (xDry - lp6D) - hissDryPower);
-                            hissWetPower += hissAlpha * ((yWet - lp6W) * (yWet - lp6W) - hissWetPower);
-                            const float want = hissWetPower > hissDryPower && hissWetPower > 1.0e-12f
-                                ? juce::jmax(0.5f, std::sqrt(hissDryPower / hissWetPower)) : 1.0f;
-                            hissGain += hissAlpha * (want - hissGain);
-                        }
-                        const float hpWet = (yWet - lpW) - (1.0f - hissGain) * (yWet - lp6W);
 
                         // Blend unshifted high band on fricatives/breaths and scale by per-note Sibilant Balance:
                         const float shapedHigh = (hpWet + sibBlend * (hpDry - hpWet)) * sibGain;
@@ -756,11 +734,7 @@ private:
         const float zcr = static_cast<float>(zeroCrossings) / static_cast<float>(windowSize);
         lastZcr = zcr;
 
-        // Inside a moved roll note a fading tail is still that note: let it through 12 dB quieter, so the
-        // last 15-25 ms are not passed dry (a pitch blip of the whole move). The roll-guided pick below
-        // still needs a clear pitch near the note, so noise is not tracked.
-        const bool inMovedNote = overrideActive && overrideHasShift;
-        const bool hasEnergy = (rms > (inMovedNote ? 0.25f * energyGateRms : energyGateRms));
+        const bool hasEnergy = (rms > energyGateRms);
 
         const MPMResult rawMpm = hasEnergy ? detector.processFrame(readPtr) : MPMResult{};
         lastClarity = rawMpm.clarity;
@@ -776,7 +750,7 @@ private:
         // (the previous note, a harmonic), but a clear pitch sits near the note's sung centre, use
         // that. Otherwise those 20-50 ms pass dry or mis-shifted: with a 3 st move, an audible blip.
         bool rollGuided = false;
-        if (hasEnergy && inMovedNote
+        if (hasEnergy && overrideActive && overrideHasShift
             && (! mpmRes.isVoiced || std::abs(Quantizer::hzToMidi(mpmRes.pitchHz) - overrideSungMidi) > rollNoteRangeSemitones))
         {
             float bestClarity = rollNoteMinClarity;
@@ -1411,8 +1385,6 @@ private:
     int   sibilantWritePos = 0;
     float sibilantLpG      = 0.2f;
     std::array<float, 2> sibilantWetLpState {};
-    std::array<float, 2> hissWetLpState {}, hissDryLpState {};
-    float hissLpG = 0.3f, hissAlpha = 0.001f, hissDryPower = 0.0f, hissWetPower = 0.0f, hissGain = 1.0f;
     std::array<float, 2> sibilantDryLpState {};
 
 public:

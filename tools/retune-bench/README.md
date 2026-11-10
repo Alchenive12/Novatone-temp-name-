@@ -44,8 +44,9 @@ Needs `pip install librosa soundfile`.
   old-vs-new comparison on a real vocal (notes from pYIN, every note snapped and moved), with WAVs to listen to.
 
 ## Open-items bench (2026-11-10, evening)
-- `mk3.py` / `mk3b.py` - synthetic female-range vocal with breath noise in the voice, voiced "z" note ends and
-  note tails fading into near-silence (`mk3b`: quieter take, tails fade 50 dB, reproduces a note-end blip).
+- `mk3.py` / `mk3b.py` - synthetic female-range vocal with breath noise, voiced "z" note ends and tails fading
+  into near-silence. Warning: they did NOT predict the real vocal (blips and brightness behaved differently) -
+  use yudy groovy for DSP decisions.
 - `render.py <h3> <label> <shifts...>` - renders `prep/` (from `prep_notes.py`) to `r_<label>_<k>.wav`.
 - `bands.py label=path ...` - output vs dry power per band on clearly voiced frames (where the hiss sits).
 - `notesplit_test.cpp` - assert self-check of the Note split mapping for sessions saved with the old knob.
