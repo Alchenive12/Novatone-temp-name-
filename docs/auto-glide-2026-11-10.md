@@ -129,3 +129,18 @@ Left: three note ends fading into a consonant or into near-silence (below the en
 6 kHz is +1.4 dB vs dry (Melodyne -1.1 dB) - not addressed.
 Limit of this method: the bench can only find artifacts that show up as pitch, level, periodicity or
 sub-fundamental energy. Anything else needs a timestamp from the owner's ears.
+
+## Round 5: closing the open items (branch `remote/close-open-items`)
+Owner listened to PR #6: sounds good. This round went after what was still open.
+Measured on the real yudy groovy vocal (`Samples/... 18-45-48 ... Part_1.wav`) with harness3; old = main 4895d5d.
+Verification: level 2 (offline bench, ASan/UBSan clean, Linux VST3 + Standalone build) + CI. Not heard in a DAW.
+
+| Item | Result |
+|---|---|
+| Drawn curve showed the old prediction | **Fixed.** `PitchTraceComponent::shiftCurveAtHop` is now the one place the glided shift is built; the engine sync and the drawn cyan curve both use it, and the curve applies it the way `TuneEngine` does (sung pitch + Center x shift, blended by Variation, only within 7.5 st) |
+| Old sessions opened Note split on More | **Fixed.** `TuneMacro::noteSplitKnobFromSaved` in `setStateInformation`: an off-grid (old 0-100 %) value opens on the mode with the nearest sensitivity; old 73 % -> Balanced. Test: `tools/retune-bench/notesplit_test.cpp` |
+| 3 note-end "blips" at +3 st (15.57, 20.83, 33.22 s) | **Not a bug, left as is.** Engine dump: all three are consonants at the note end (ZCR rises 0.15 -> 0.5, clarity falls 0.6 -> 0.1), so the frame is a fricative and passes unshifted, like every other "s". pYIN still finds a faint pitch there, which is what the leak metric counted. Shifting them would need the roll pick below clarity 0.45 - the setting that let a growl through before. Tried: a 12 dB lower energy gate inside moved notes - no change on the real vocal (the frames are loud enough, -40 dBFS), reverted |
+| "Hiss" above 6 kHz at +3 st | **Not fixed; it is tone, not hiss.** Per band vs dry on voiced frames (+3 st): NovaTone 1-2k +2.2, 4-5k +4.0, 5-6k +2.7, 6-8k +0.8, 8-11k +1.1 dB; Melodyne 1-2k +3.0, 4-5k +2.5, 5-6k -0.6, 6-8k -1.6, 8-11k -1.6 dB. So most of the lift is just moving harmonics through the formants (Melodyne has it too); NovaTone's real gap is ~2-3 dB more brightness above 5 kHz. Tried: (1) reduce-only level match of the band above 6 kHz: +1.1 -> +1.0 dB HF metric, useless; (2) 7-band tone match toward dry: +1.1 -> +0.5, 4-5k unchanged, and a band-gain rider might pump - can't judge without listening. Both reverted. Real fix = formant/envelope correction in PSOLA (Next: I9) |
+
+Unchanged: everything in `TuneEngine.h` / `PsolaShifter.h` (this branch only touches the piano roll and session loading).
+Not done: poly clip mode has no auto-glide or level match (separate spectral renderer, a new feature, not a fix).

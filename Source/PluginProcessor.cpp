@@ -955,6 +955,9 @@ void NovaToneAudioProcessor::setStateInformation(const void* data, int sizeInByt
         const auto clipTree = tree.getChildWithName("PolyClip").createCopy();
         tree.removeChild(tree.getChildWithName("PolyClip"), nullptr);
         const auto choirFolder = tree.getProperty("choirFolder").toString();
+        for (auto param : tree)
+            if (param.hasType("PARAM") && param.getProperty("id").toString() == "tune_sensitivity")
+                param.setProperty("value", TuneMacro::noteSplitKnobFromSaved(static_cast<float>(param.getProperty("value"))), nullptr);
         applyStateGuarded(tree);
         juce::MessageManager::callAsync([this, choirFolder, alive = juce::WeakReference<NovaToneAudioProcessor>(this)]
         {
